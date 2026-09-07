@@ -109,6 +109,40 @@ Note that three of these are pre-existing bugs in `locus/security/signing.py` an
 `keys.py` rather than in code this PR wrote. They are fixed here because this PR is what
 first makes that path reachable from a command line, and because the path-binding one is
 also reachable through `memory_read` today.
+### `locus recall`: ranked, stale-aware retrieval over markdown roots
+Locus gains its first structure-aware behaviour: frontmatter now drives ranking, trust
+tiers, and staleness instead of being inert to every tool.
+**New:**
+- `feat(recall)`: `locus recall QUERY` builds or refreshes a SQLite FTS5 index (standard
+  library only, no PyYAML) over one or more roots given by repeated `--root DIR`, a
+  `.locus.toml` `[recall] roots = [...]` in the project or a parent directory, or
+  `LOCUS_PALACE`. A root is any tree of markdown files: a palace, an OKF bundle, a Claude
+  Code memory directory. The index lives at `${XDG_CACHE_HOME:-~/.cache}/locus/<hash-of-roots>.sqlite`,
+  never inside a root, falls back to memory when that location is not writable, and
+  refreshes incrementally by mtime, then content hash (#50).
+- `feat(recall)`: bm25 ranking with title and description weighted above the body and an
+  exact-phrase boost; ties prefer human-reviewed files, then newer `modified`. Each hit
+  carries title, path, `modified`, OKF trust tier (`unverified`, `machine-confirmed`,
+  `human-reviewed`), and a `STALE` flag when `stale_after` has passed or `status` is
+  `deprecated`. Flags: `-k`, `--budget` (text output never exceeds it), `--include journal`
+  (`type: Journal` is skipped by default), `--type`, `--json`, `--refresh`, `--index`.
+- `feat(recall)`: importable `locus.recall.recall()` and `RecallIndex`; `python -m
+  locus.recall` works too. The `locus` console script now dispatches `recall` before
+  importing the Agent SDK, so a per-prompt hook pays only for `sqlite3`.
+- `feat(mcp)`: `memory_search` delegates to the same index, scoped by its `path`
+  argument, so results are ranked as `spec/mcp-server.md` always claimed. Each hit shows
+  the relative path, title, trust tier, `STALE`, modified date, and the best matching
+  body line. ripgrep and the Python `re` scan remain only as the fallback for a Python
+  build without FTS5.
+**Docs:** new `spec/recall.md`; README "Recall" section; `spec/mcp-server.md` now describes
+the real `memory_search` behaviour; synthetic `tests/fixtures/okf-bundle/`; two
+`scripts/bench-mcp.py` search cases that assumed ripgrep regex or substring semantics were
+rewritten for the FTS5 backend (45/45 still pass).
+**Tests:** 58 new in `tests/unit/test_recall.py` (frontmatter parser, planted hit, stale
+flag, journal exclusion, byte budget, multi-root attribution, incremental refresh,
+tie-breaks, phrase boost, config, CLI, console-script dispatch) and 9 in `test_mcp.py`
+(ranked order, trust tier and `STALE` in output, scope to a file, journal inclusion,
+write-then-search, FTS5 fallback); 336 total.
 
 ---
 

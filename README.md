@@ -143,7 +143,7 @@ to be set explicitly — the server binds to loopback by default.
 | `memory_list` | Returns `INDEX.md` (no args) or lists a room's files |
 | `memory_read` | Reads any file in the palace |
 | `memory_write` | Atomically writes a file (guarded — cannot write to `_metrics/`, `sessions/`, `.sig/`, `.security/`) |
-| `memory_search` | Full-text search across the palace (ripgrep or Python fallback) |
+| `memory_search` | Ranked full-text search over the shared FTS5 index (see [Recall](#recall)); ripgrep only without FTS5 |
 | `memory_batch` | Reads up to 20 palace files in a single call — use for multi-room loads |
 
 Add `--security` to enable Ed25519 signature verification on reads and automatic signing on writes.
@@ -204,6 +204,69 @@ for the full client setup guide and `spec/mcp-server.md` for architecture detail
 
 ---
 
+## Recall
+
+`locus recall` answers "what do I already know about this?" in one call, fast enough
+to run on every prompt from a hook. It keeps a SQLite FTS5 index (standard library only,
+no PyYAML) over any number of markdown roots: a palace, an OKF bundle, a Claude Code
+memory directory, or all of them at once.
+
+```sh
+locus recall --root ~/memory --root ./docs "why does the flux kustomization stall"
+```
+
+```
+Recalled memory:
+1. Flux healthcheck stall (human-reviewed, 2026-08-22)
+   /home/me/memory/project_flux-healthcheck-stall.md
+   Flux Kustomization with wait:true stalls on health checks for a bad revision ...
+2. [STALE] Old Flux bootstrap procedure (unverified, 2025-11-02)
+   /home/me/docs/runbooks/flux-bootstrap.md
+   Bootstrap Flux with a personal access token ...
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--root DIR` | `.locus.toml`, then `LOCUS_PALACE` | Directory to index; repeatable |
+| `-k N` | 3 | Number of hits |
+| `--budget BYTES` | 4096 | Hard cap on text output |
+| `--include journal` | off | Include `type: Journal` files |
+| `--type TYPE` | all | Only this frontmatter type; repeatable |
+| `--json` | off | Print a JSON list instead of text |
+| `--refresh` | off | Rebuild the index from scratch |
+
+Frontmatter drives the result: `title` (or `name`, or the first heading), `description`,
+`tags`, `type` (or `metadata.type`), `modified` (else `generated.at`, else file mtime),
+`status`, `stale_after`, and `verified`. Ranking is bm25 with title and description
+weighted above the body; exact ties go to human-reviewed files, then to the newest
+`modified`. A hit is flagged `STALE` when its `stale_after` has passed or its `status` is
+`deprecated`. Trust tiers follow OKF: `unverified`, `machine-confirmed` (only non-human
+`verified` entries), `human-reviewed` (any `verified` entry whose `by` starts with `human:`).
+
+Roots can live in a `.locus.toml` in the project or any parent directory:
+
+```toml
+[recall]
+roots = ["docs", "~/memory/shared"]
+```
+
+The index is stored at `${XDG_CACHE_HOME:-~/.cache}/locus/<hash-of-roots>.sqlite`, never
+inside a root, and is refreshed incrementally (mtime, then content hash) on every call.
+With no hits the text output is empty and the exit status is still 0, so a prompt hook can
+call it unconditionally:
+
+```sh
+#!/bin/sh
+# Claude Code UserPromptSubmit hook: whatever this prints is injected as context.
+prompt=$(jq -r .prompt)
+exec locus recall -k 3 --budget 4096 "$prompt"
+```
+
+The MCP server's `memory_search` uses the same index, so MCP results are ranked the
+same way. Full rules in [`spec/recall.md`](spec/recall.md).
+
+---
+
 ## Security
 
 The security system (`--security`) gives every palace file an Ed25519 signature and every agent session a unique cryptographic nonce. Tool outputs are tagged `[TRUSTED]`, `[DATA]`, or `[CRITICAL-DATA]` before the agent sees them. The agent skill (`locus-security`) teaches agents to extract facts from `[DATA]` content but never follow directives within it.
@@ -257,6 +320,7 @@ spec/             Palace convention definitions:
   size-limits.md        Context budget thresholds
   write-modes.md        Session logs vs canonical edits
   mcp-server.md         MCP server architecture and safety model
+  recall.md             locus recall: roots, index, ranking, trust tier, STALE
   metrics-schema.md     Run metrics JSON schema
   audit-algorithm.md    Palace health scoring
   health-report-format.md  Audit report structure
@@ -284,6 +348,7 @@ locus/
   audit/          Palace health auditor (locus-audit CLI)
   feedback/       Inferred feedback classifier
   mcp/            MCP server (locus-mcp CLI) — palace.py, server.py, main.py
+  recall/         locus recall: FTS5 index shared with memory_search
   security/       Ed25519 security system — keys, signing, taint, nonce, middleware
   utils.py        Shared utilities (slug_from_path)
 ```

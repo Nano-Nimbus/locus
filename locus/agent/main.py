@@ -104,6 +104,8 @@ def cli() -> None:
     parser = argparse.ArgumentParser(
         prog="locus",
         description="Run a Locus memory agent against a palace directory.",
+        epilog="Subcommand: 'locus recall QUERY' ranks memory files against a prompt "
+               "(see 'locus recall --help').",
     )
     parser.add_argument(
         "--version",

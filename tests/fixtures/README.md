@@ -35,6 +35,23 @@ the content is better organized for the agent. In a real palace with 8+
 specialty files, the savings on specific queries are substantially larger
 — the agent skips 5-6 irrelevant files entirely.
 
+## okf-bundle
+
+`okf-bundle/` is a small synthetic [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format)
+bundle about a fictional greenhouse, used by `tests/unit/test_recall.py`. Each
+file exercises one recall rule:
+
+| File | Rule |
+|---|---|
+| `irrigation-schedule.md` | human-reviewed (`verified` by `human:`), `generated.at` as `modified`, planted phrase "zone seven valve chatter" |
+| `sensor-calibration.md` | machine-confirmed (`verified` by a process only), explicit `modified` |
+| `frost-watch.md` | `STALE` via `stale_after` in the past |
+| `heater-decision.md` | `STALE` via `status: deprecated` |
+| `compost-cadence.md` | `stale_after` far in the future, not stale |
+| `pump-controller.md` | Claude Code memory frontmatter (`name`, `metadata.type`) |
+| `journal/2026-05-03.md` | `type: Journal`, excluded unless `--include journal` |
+| `index.md` | OKF directory index (no frontmatter) |
+
 ## flat-palace
 
 `flat-palace/` is used by `scripts/bench-compare.py` as the comparison target.

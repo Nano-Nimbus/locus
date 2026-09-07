@@ -49,7 +49,7 @@ flowchart LR
     subgraph SRV["locus-mcp · stdio transport"]
         direction TB
         MAIN["main.py<br/>CLI · palace resolution<br/>logging config"]
-        SERVER["server.py<br/>FastMCP tool handlers<br/>rg / Python search"]
+        SERVER["server.py<br/>FastMCP tool handlers<br/>FTS5 ranked search"]
         PALACE["palace.py<br/>safe_resolve()<br/>assert_writable()<br/>find_palace()"]
     end
 

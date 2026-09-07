@@ -32,7 +32,7 @@ Repository = "https://github.com/Nano-Nimbus/locus"
 Changelog = "https://github.com/Nano-Nimbus/locus/blob/main/CHANGELOG.md"
 
 [project.scripts]
-locus = "locus.agent.main:cli"
+locus = "locus.cli:main"
 locus-audit = "locus.audit.main:cli"
 locus-mcp = "locus.mcp.main:cli"
 locus-security = "locus.security.main:cli"
