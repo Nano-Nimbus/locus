@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Palace bootstrap for explicit roots, and the missing `locus-security` CLI
+
+Two bugs found while wiring Locus into a container deployment.
+
+**Fixes:**
+
+- `fix(mcp)`: `find_palace()` now bootstraps a skeleton `INDEX.md` (plus `global/` and
+  `projects/` when the directory is empty) for palaces given via `--palace`, `LOCUS_PALACE`,
+  or `./.locus`. Only the `~/.locus` fallback was bootstrapped before, so every container
+  deployment, which always passes `--palace`, started without an index and `memory_list`
+  answered "No INDEX.md found" until someone wrote one by hand (#52). Existing files are never
+  modified, a read-only root is logged and skipped, and the Claude Code auto-memory bridge
+  directory is deliberately left untouched.
+- `fix(security)`: the `locus-security init-keys` / `sign-all` / `rotate-keys` commands
+  documented in the README, `docs/security.md`, `docs/onboarding.md`,
+  `templates/locus-security.yaml`, and the `load_keystore()` error message had no
+  console-script entry point. Added `locus/security/main.py` and the `locus-security`
+  script with `init-keys`, `sign-all`, `verify-all`, and `rotate-keys` (#53).
+
+**Tests:** 7 bootstrap cases in `test_mcp.py` (empty root, env var, `./.locus`, non-empty
+root, existing index preserved, read-only root, bridge untouched); 13 CLI cases in
+`tests/unit/security/test_cli.py`; `--version` coverage for `locus-security`.
+
+---
+
 ## v0.10.0 — 2026-03-14
 
 Bumps version to include `--version` flag on all CLIs, skill sync tooling,

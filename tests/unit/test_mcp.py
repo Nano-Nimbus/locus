@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,80 @@ class TestFindPalace:
         assert (tmp_path / ".locus" / "INDEX.md").exists()
         assert (tmp_path / ".locus" / "global").is_dir()
         assert (tmp_path / ".locus" / "projects").is_dir()
+
+    # Explicit roots used to skip bootstrapping entirely (#52).
+
+    def test_explicit_empty_dir_gets_full_skeleton(self, tmp_path: Path) -> None:
+        empty = tmp_path / "palace"
+        empty.mkdir()
+        assert find_palace(str(empty)) == empty.resolve()
+        assert (empty / "INDEX.md").is_file()
+        assert "# Memory Palace" in (empty / "INDEX.md").read_text()
+        assert (empty / "global").is_dir()
+        assert (empty / "projects").is_dir()
+
+    def test_env_var_empty_dir_gets_skeleton(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        empty = tmp_path / "palace"
+        empty.mkdir()
+        monkeypatch.setenv("LOCUS_PALACE", str(empty))
+        assert find_palace() == empty.resolve()
+        assert (empty / "INDEX.md").is_file()
+
+    def test_cwd_locus_empty_dir_gets_skeleton(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        locus_dir = tmp_path / ".locus"
+        locus_dir.mkdir()
+        monkeypatch.delenv("LOCUS_PALACE", raising=False)
+        monkeypatch.chdir(tmp_path)
+        find_palace()
+        assert (locus_dir / "INDEX.md").is_file()
+
+    def test_explicit_nonempty_dir_gets_index_only(self, tmp_path: Path) -> None:
+        root = tmp_path / "palace"
+        root.mkdir()
+        (root / "notes.md").write_text("# Notes\n")
+        find_palace(str(root))
+        assert (root / "INDEX.md").is_file()
+        # An existing layout is respected: no skeleton directories added.
+        assert not (root / "global").exists()
+        assert not (root / "projects").exists()
+        assert (root / "notes.md").read_text() == "# Notes\n"
+
+    def test_explicit_dir_with_index_is_untouched(self, tmp_path: Path) -> None:
+        root = tmp_path / "palace"
+        root.mkdir()
+        (root / "INDEX.md").write_text("# Mine\n")
+        find_palace(str(root))
+        assert (root / "INDEX.md").read_text() == "# Mine\n"
+        assert not (root / "global").exists()
+
+    @pytest.mark.skipif(
+        not hasattr(os, "geteuid") or os.geteuid() == 0,
+        reason="root ignores directory permissions",
+    )
+    def test_explicit_readonly_dir_does_not_fail_startup(self, tmp_path: Path) -> None:
+        root = tmp_path / "palace"
+        root.mkdir()
+        root.chmod(0o500)
+        try:
+            assert find_palace(str(root)) == root.resolve()
+            assert not (root / "INDEX.md").exists()
+        finally:
+            root.chmod(0o700)
+
+    def test_auto_memory_dir_is_not_bootstrapped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The bridge directory belongs to Claude Code and already has MEMORY.md
+        # as its entry point; Locus must not write an INDEX.md into it.
+        fake_home = tmp_path / "home"
+        fake_cwd = tmp_path / "projects" / "myrepo"
+        fake_cwd.mkdir(parents=True)
+        auto_mem = fake_home / ".claude" / "projects" / _slug_from_path(fake_cwd) / "memory"
+        auto_mem.mkdir(parents=True)
+        (auto_mem / "MEMORY.md").write_text("# Memory\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.delenv("LOCUS_PALACE", raising=False)
+        monkeypatch.chdir(fake_cwd)
+        assert find_palace() == auto_mem.resolve()
+        assert not (auto_mem / "INDEX.md").exists()
 
 
 # ---------------------------------------------------------------------------

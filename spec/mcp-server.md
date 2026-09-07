@@ -104,6 +104,13 @@ If neither is provided, the server resolves the palace using this priority order
 4. **Auto-memory bridge** — `~/.claude/projects/<slug>/memory/` (see below)
 5. `~/.locus/` global palace (bootstrapped if absent)
 
+Whichever directory steps 1, 2, 3, or 5 resolve to is given a skeleton
+`INDEX.md` when it has none (an empty directory also gets `global/` and
+`projects/`). Existing files are never modified, and a read-only root is
+logged and skipped. Step 4 is the exception: a Claude Code memory directory
+already has `MEMORY.md` as its entry point and is owned by Claude Code, so
+Locus never writes into it during resolution.
+
 ---
 
 ## Auto-Memory Bridge

@@ -219,6 +219,9 @@ locus-mcp --palace ~/.locus --security
 locus --palace ~/.locus --security --task "..."
 ```
 
+The `locus-security` CLI has four subcommands: `init-keys`, `sign-all`, `verify-all`
+(exit 1 if any file fails verification), and `rotate-keys`.
+
 **Threat model:** direct prompt injection, memory poisoning, indirect injection via external data, nonce exfiltration, multi-turn context drift.
 
 See [`docs/security.md`](docs/security.md) for the full protocol, configuration reference, and design decisions.

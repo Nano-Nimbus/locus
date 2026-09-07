@@ -46,12 +46,19 @@ def find_palace(palace_arg: str | None = None) -> Path:
     3. ``.locus/`` in the current working directory
     4. ``~/.claude/projects/<slug>/memory/`` (Claude Code auto-memory bridge)
     5. ``~/.locus/`` global palace
+
+    Steps 1 to 3 and 5 name a directory that is meant to *be* a palace, so
+    each of them is bootstrapped when it has no ``INDEX.md`` yet (see
+    :func:`_bootstrap_if_needed`).  Step 4 is left untouched: a Claude Code
+    memory directory already has ``MEMORY.md`` as its entry point and is
+    owned by Claude Code, not by Locus.
     """
     if palace_arg:
         p = Path(palace_arg).expanduser().resolve()
         if not p.is_dir():
             raise ValueError(f"Palace path does not exist: {p}")
         log.debug("palace resolved from --palace arg: %s", p)
+        _bootstrap_if_needed(p)
         return p
 
     env = os.environ.get("LOCUS_PALACE")
@@ -60,11 +67,13 @@ def find_palace(palace_arg: str | None = None) -> Path:
         if not p.is_dir():
             raise ValueError(f"LOCUS_PALACE does not exist: {p}")
         log.debug("palace resolved from LOCUS_PALACE env: %s", p)
+        _bootstrap_if_needed(p)
         return p
 
     cwd_locus = Path.cwd() / ".locus"
     if cwd_locus.is_dir():
         log.debug("palace resolved from .locus/ in cwd: %s", cwd_locus.resolve())
+        _bootstrap_if_needed(cwd_locus.resolve())
         return cwd_locus.resolve()
 
     auto_mem = find_auto_memory()
@@ -127,6 +136,34 @@ def _ensure_index(palace: Path) -> None:
             encoding="utf-8",
         )
         log.info("created %s", index)
+
+
+def _bootstrap_if_needed(palace: Path) -> None:
+    """Give an existing but index-less palace directory a skeleton.
+
+    ``memory_list`` without a path returns ``INDEX.md``, so a palace that
+    starts without one answers every first call with "No INDEX.md found".
+    Container deployments always pass ``--palace`` explicitly, which used to
+    skip bootstrapping entirely; this closes that gap.
+
+    - An empty directory gets the full skeleton (``global/``, ``projects/``,
+      ``INDEX.md``), exactly like the ``~/.locus`` fallback.
+    - A non-empty directory without ``INDEX.md`` gets only ``INDEX.md``; its
+      existing layout is left alone.
+    - A directory that already has ``INDEX.md`` is not touched.
+
+    A read-only root (for example a mounted checkout) is logged and skipped
+    rather than failing startup; ``memory_list`` then reports the missing
+    index as before.
+    """
+    if (palace / "INDEX.md").is_file():
+        return
+    try:
+        if not any(palace.iterdir()):
+            _bootstrap_palace(palace)
+        _ensure_index(palace)
+    except OSError as exc:
+        log.warning("could not bootstrap palace at %s: %s", palace, exc)
 
 
 def safe_resolve(palace_root: Path, rel_path: str) -> Path:

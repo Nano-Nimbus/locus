@@ -94,6 +94,7 @@ locus/
     nonce.py        Per-session HMAC-SHA256 nonce, system prompt injection
     taint.py        TaintLevel, TaintTracker (session_tainted latch), classify_content()
     middleware.py   SecurityContext, SecurityMiddleware (Pre/PostToolUse hooks)
+    main.py         CLI (locus-security): init-keys, sign-all, verify-all, rotate-keys
     __init__.py     Public API: build_security_context()
   utils.py        Shared utilities — slug_from_path()
 spec/             Palace convention definitions (the shared contract between agents)
@@ -206,6 +207,7 @@ uv run pytest tests/unit/test_mcp.py -v
 | `tests/unit/security/test_nonce.py` | Nonce generation, injection, uniqueness |
 | `tests/unit/security/test_taint.py` | Taint classification, nonce detection, tracker |
 | `tests/unit/security/test_review_fixes.py` | Regression tests for all P1/P2 review findings |
+| `tests/unit/security/test_cli.py` | `locus-security` CLI: key init, bulk sign/verify, rotation |
 
 **Coverage requirements:**
 
