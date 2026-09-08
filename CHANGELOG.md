@@ -21,9 +21,45 @@ Two bugs found while wiring Locus into a container deployment.
   console-script entry point. Added `locus/security/main.py` and the `locus-security`
   script with `init-keys`, `sign-all`, `verify-all`, and `rotate-keys` (#53).
 
+**Security review fixes** (all on the newly reachable key path):
+
+- `fix(security)`: `rotate-keys` gave the new key the same default id as the key it was
+  retiring (`locus-YYYY-MM-DD` for both), so a single rotation on the day the key was
+  created silently broke every existing signature: the retired archive is named after the
+  key id, so it was overwritten, and `KeyStore.find_by_id` resolves a shared id to the
+  *active* key, so verification used the wrong public key. New ids are now suffixed
+  (`locus-2026-03-01-2`) until unique within the store, and `init-keys` rejects an
+  explicit `--key-id` that another key already uses.
+- `fix(security)`: a missing, wrong, or unexpected `LOCUS_SIGNING_PASSPHRASE` raised an
+  uncaught `TypeError` with a traceback. All three cases now report which one it is and
+  exit 1, and no message ever echoes the passphrase.
+- `fix(security)`: `sign-all` aborted on the first file that was not valid UTF-8, without
+  naming it, leaving every later file unsigned. Each bad file is now named on stderr and
+  skipped, the rest are still signed, and the command exits 1 so a partial run is not
+  mistaken for a clean one.
+- `fix(security)`: `--expires-days -5` fell through the `> 0` guard and meant "never
+  expires". Negative values are now a usage error; only 0 means never.
+- `fix(security)`: `sign-all` signed symlinked files whose target resolves outside the
+  palace, stamping palace-trusted provenance onto content the palace does not own.
+  Escaping symlinks are now named and skipped, and `verify-all` fails on them. Symlinks
+  pointing inside the palace are unaffected.
+- `fix(security)`: the key store and its `retired/` directory are created 0700 and every
+  file in them 0600, set explicitly rather than inherited from the umask. Writes fsync
+  before the rename and clean up the temp file if anything fails.
+- `fix(security)`: `rotate-keys` reads the store back after writing and fails loudly if
+  the new active key does not match what it just generated, instead of surfacing a
+  half-written store later as unexplained signing failures. The retired public key is
+  still archived before `active.pem` is overwritten.
+- `fix(security)`: `verify-all` exited 0 on a palace with no signable files, so a gate
+  pointed at the wrong root passed vacuously. It now reports that and exits 1.
+- `feat(security)`: `rotate-keys` accepts `--expires-days`, matching `init-keys`.
+
 **Tests:** 7 bootstrap cases in `test_mcp.py` (empty root, env var, `./.locus`, non-empty
-root, existing index preserved, read-only root, bridge untouched); 13 CLI cases in
-`tests/unit/security/test_cli.py`; `--version` coverage for `locus-security`.
+root, existing index preserved, read-only root, bridge untouched); 29 CLI cases in
+`tests/unit/security/test_cli.py`, including a double rotation on one day that checks
+signatures from all three key generations still verify, the three passphrase failure
+modes, the non-UTF-8 skip, negative `--expires-days`, symlink escape on both `sign-all`
+and `verify-all`, and key store permissions; `--version` coverage for `locus-security`.
 
 ---
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
 
-from locus.security.keys import load_keystore
+from locus.security.keys import load_keystore, unique_key_id
 from locus.security.main import iter_signable_files, main
 from locus.security.signing import verify_file
 
@@ -129,3 +130,177 @@ class TestRotateKeys:
         assert _keystore(palace).active.key_id != "old-key"
         # Files signed by the retired key still verify.
         assert main(["verify-all", "--palace", str(palace)]) == 0
+
+
+class TestExpiresDays:
+    def test_negative_is_rejected(self, palace: Path, capsys: pytest.CaptureFixture) -> None:
+        # -5 used to fall through the "> 0" guard and silently mean "never".
+        with pytest.raises(SystemExit) as exc:
+            main(["init-keys", "--palace", str(palace), "--expires-days", "-5"])
+        assert exc.value.code == 2
+        assert "must be 0" in capsys.readouterr().err
+        assert not (palace / ".security" / "keys" / "active.pem").exists()
+
+    def test_positive_sets_an_expiry(self, palace: Path) -> None:
+        assert main(["init-keys", "--palace", str(palace), "--expires-days", "30"]) == 0
+        assert _keystore(palace).active.expires_at is not None
+
+
+class TestUniqueKeyId:
+    def test_suffixes_only_on_collision(self) -> None:
+        assert unique_key_id("locus-2026-03-01", set()) == "locus-2026-03-01"
+        taken = {"locus-2026-03-01", "locus-2026-03-01-2"}
+        assert unique_key_id("locus-2026-03-01", taken) == "locus-2026-03-01-3"
+
+    def test_init_keys_rejects_a_reused_explicit_id(
+        self, palace: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        main(["init-keys", "--palace", str(palace), "--key-id", "k1"])
+        main(["rotate-keys", "--palace", str(palace)])
+        assert main(["init-keys", "--palace", str(palace), "--key-id", "k1", "--force"]) == 1
+        assert "already used by another key" in capsys.readouterr().err
+
+
+class TestRotateTwiceInOneDay:
+    def test_both_old_keys_still_verify(self, palace: Path) -> None:
+        """Two rotations on one day must not collide on the default key id.
+
+        Both rotations default to ``locus-YYYY-MM-DD``: the second archive
+        used to overwrite the first, and ``find_by_id`` resolved the shared id
+        to the active key, so everything signed with either retired key failed.
+        """
+        assert main(["init-keys", "--palace", str(palace)]) == 0
+        assert main(["sign-all", "--palace", str(palace)]) == 0
+        first_id = _keystore(palace).active.key_id
+
+        assert main(["rotate-keys", "--palace", str(palace)]) == 0
+        second_id = _keystore(palace).active.key_id
+        (palace / "after-first.md").write_text("# after first rotation\n")
+        assert main(["sign-all", "--palace", str(palace)]) == 0
+
+        assert main(["rotate-keys", "--palace", str(palace)]) == 0
+        third_id = _keystore(palace).active.key_id
+        (palace / "after-second.md").write_text("# after second rotation\n")
+        assert main(["sign-all", "--palace", str(palace)]) == 0
+
+        assert len({first_id, second_id, third_id}) == 3
+        store = palace / ".security" / "keys"
+        assert (store / "retired" / f"{first_id}.pub").exists()
+        assert (store / "retired" / f"{second_id}.pub").exists()
+
+        keystore = _keystore(palace)
+        assert {kp.key_id for kp in keystore.retired} == {first_id, second_id}
+        # Signatures from every generation still verify.
+        assert main(["verify-all", "--palace", str(palace)]) == 0
+
+
+class TestPassphraseErrors:
+    def test_missing_passphrase_reports_cleanly(
+        self, palace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("LOCUS_SIGNING_PASSPHRASE", "correct horse")
+        assert main(["init-keys", "--palace", str(palace)]) == 0
+        monkeypatch.delenv("LOCUS_SIGNING_PASSPHRASE")
+        # Used to escape as an uncaught TypeError with a traceback.
+        assert main(["sign-all", "--palace", str(palace)]) == 1
+        err = capsys.readouterr().err
+        assert "LOCUS_SIGNING_PASSPHRASE is not set" in err
+        assert "correct horse" not in err
+
+    def test_wrong_passphrase_reports_cleanly(
+        self, palace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("LOCUS_SIGNING_PASSPHRASE", "correct horse")
+        main(["init-keys", "--palace", str(palace)])
+        monkeypatch.setenv("LOCUS_SIGNING_PASSPHRASE", "battery staple")
+        assert main(["sign-all", "--palace", str(palace)]) == 1
+        err = capsys.readouterr().err
+        assert "does not match" in err
+        assert "battery staple" not in err
+
+    def test_passphrase_set_on_a_plaintext_key(
+        self, palace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        monkeypatch.setenv("LOCUS_SIGNING_PASSPHRASE", "unexpected")
+        assert main(["sign-all", "--palace", str(palace)]) == 1
+        assert "is not encrypted" in capsys.readouterr().err
+
+
+class TestUnreadableFiles:
+    def test_non_utf8_file_is_named_and_skipped(
+        self, palace: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        (palace / "binary.md").write_bytes(b"\xff\xfe not text\n")
+        assert main(["sign-all", "--palace", str(palace)]) == 1
+        captured = capsys.readouterr()
+        assert "skipped binary.md: not valid UTF-8" in captured.err
+        # Every other file is still signed: one bad file used to abort the run.
+        assert "Signed 3 files" in captured.out
+        assert (palace / "INDEX.md").parent.joinpath(".sig", "INDEX.md.sig").exists()
+        assert not (palace / ".sig" / "binary.md.sig").exists()
+
+
+class TestSymlinkEscape:
+    @pytest.fixture()
+    def outside_file(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+        outside = tmp_path_factory.mktemp("outside")
+        target = outside / "not-ours.md"
+        target.write_text("# content the palace does not own\n")
+        return target
+
+    def test_escaping_symlink_is_never_signed(
+        self, palace: Path, outside_file: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        (palace / "smuggled.md").symlink_to(outside_file)
+        assert main(["sign-all", "--palace", str(palace)]) == 1
+        assert "smuggled.md: symlink resolves outside the palace" in capsys.readouterr().err
+        assert not (palace / ".sig" / "smuggled.md.sig").exists()
+        assert not (outside_file.parent / ".sig").exists()
+
+    def test_verify_all_fails_on_an_escaping_symlink(
+        self, palace: Path, outside_file: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        main(["sign-all", "--palace", str(palace)])
+        (palace / "smuggled.md").symlink_to(outside_file)
+        assert main(["verify-all", "--palace", str(palace)]) == 1
+        assert "FAIL smuggled.md" in capsys.readouterr().err
+
+    def test_symlink_inside_the_palace_is_still_signed(self, palace: Path) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        (palace / "alias.md").symlink_to(palace / "INDEX.md")
+        assert main(["sign-all", "--palace", str(palace)]) == 0
+        assert (palace / ".sig" / "alias.md.sig").exists()
+
+    def test_broken_symlink_is_skipped_silently(self, palace: Path) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        (palace / "dangling.md").symlink_to(palace / "gone.md")
+        assert main(["sign-all", "--palace", str(palace)]) == 0
+
+
+class TestVerifyAllEmptyPalace:
+    def test_no_signable_files_is_not_a_silent_pass(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        (tmp_path / "locus-security.yaml").write_text(_CONFIG)
+        main(["init-keys", "--palace", str(tmp_path)])
+        assert main(["verify-all", "--palace", str(tmp_path)]) == 1
+        assert "no signable files found" in capsys.readouterr().err
+
+
+class TestKeyPermissions:
+    def test_key_store_is_user_only(self, palace: Path) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        store = palace / ".security" / "keys"
+        assert stat.S_IMODE(store.stat().st_mode) == 0o700
+        for name in ("active.pem", "active.pub", "active.json"):
+            assert stat.S_IMODE((store / name).stat().st_mode) == 0o600
+
+    def test_retired_dir_is_user_only_after_rotation(self, palace: Path) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        main(["rotate-keys", "--palace", str(palace)])
+        retired = palace / ".security" / "keys" / "retired"
+        assert stat.S_IMODE(retired.stat().st_mode) == 0o700

@@ -220,7 +220,11 @@ locus --palace ~/.locus --security --task "..."
 ```
 
 The `locus-security` CLI has four subcommands: `init-keys`, `sign-all`, `verify-all`
-(exit 1 if any file fails verification), and `rotate-keys`.
+(exit 1 if any file fails verification, or if the palace holds no signable files at all),
+and `rotate-keys`. `sign-all` names and skips any file it cannot read as UTF-8 rather than
+aborting the run, and exits 1 if it skipped anything. Neither command follows a symlink
+whose target resolves outside the palace: those are named and skipped by `sign-all`, and
+reported as failures by `verify-all`.
 
 **Threat model:** direct prompt injection, memory poisoning, indirect injection via external data, nonce exfiltration, multi-turn context drift.
 

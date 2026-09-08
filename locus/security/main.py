@@ -13,20 +13,38 @@ the key store (``key_store``, default ``.security/keys/``).  Set
 variable must be set again whenever the key is loaded.
 
 Exit codes: 0 on success, 1 on a reported error (missing config or keys,
-existing keys without ``--force``, or at least one file failing
-``verify-all``).
+existing keys without ``--force``, at least one file failing ``verify-all``,
+or at least one file skipped by ``sign-all``), 2 on a usage error.
+
+``sign-all`` never stops at the first bad file.  A file it cannot read as
+UTF-8, or cannot read at all, is named on stderr and skipped, the remaining
+files are still signed, and the command exits 1 so a pipeline does not treat
+a partial run as a success.
+
+Symlinks whose target resolves outside the palace root are never signed or
+verified: signing one would attach palace-trusted provenance to content the
+palace does not own.  They are named on stderr and skipped.
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import logging
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 from .config import SecurityConfig, load_security_config
-from .keys import generate_keypair, load_keystore, rotate_keypair, save_keypair
+from .keys import (
+    default_key_id,
+    existing_key_ids,
+    generate_keypair,
+    load_keystore,
+    rotate_keypair,
+    save_keypair,
+    unique_key_id,
+)
 from .signing import sign_file, verify_file
 
 # Directories whose markdown files are never signed or verified: signature
@@ -34,6 +52,8 @@ from .signing import sign_file, verify_file
 # by the audit pipeline.  Any other dot-directory (.git, .obsidian) is
 # tooling, not knowledge.
 _SKIP_DIRS = {"_metrics"}
+
+log = logging.getLogger("locus.security.cli")
 
 
 class CliError(Exception):
@@ -50,14 +70,34 @@ def _load_config(palace: Path) -> SecurityConfig:
     return config
 
 
-def iter_signable_files(palace: Path) -> Iterator[Path]:
-    """Yield every ``*.md`` under ``palace`` outside skipped directories, sorted."""
+def iter_signable_files(palace: Path, escaped: list[Path] | None = None) -> Iterator[Path]:
+    """Yield every ``*.md`` under ``palace`` outside skipped directories, sorted.
+
+    A path whose target resolves outside ``palace`` is skipped and appended to
+    ``escaped`` if a list is given.  ``rglob`` does not descend into symlinked
+    directories, but it does yield symlinked *files*, and signing one would
+    stamp palace provenance onto content stored outside the palace: anyone who
+    can drop a symlink into the palace could otherwise launder an arbitrary
+    file into the trusted tier.  Broken symlinks fail ``is_file()`` and are
+    skipped silently.
+    """
+    root = palace.resolve()
     for path in sorted(palace.rglob("*.md")):
         parent_parts = path.relative_to(palace).parts[:-1]
         if any(part in _SKIP_DIRS or part.startswith(".") for part in parent_parts):
             continue
-        if path.is_file():
-            yield path
+        if not path.is_file():
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(root):
+            log.warning("skipping symlink outside palace: %s -> %s", path, resolved)
+            if escaped is not None:
+                escaped.append(path)
+            continue
+        yield path
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +117,20 @@ def cmd_init_keys(
             f"An active keypair already exists in {store}. "
             "Use rotate-keys to rotate it, or --force to overwrite it."
         )
+    taken = existing_key_ids(store)
+    if key_id is None:
+        # Auto-generated ids are date-stamped, so --force on the same day as an
+        # earlier key would reuse that key's id.  Suffix instead.
+        key_id = unique_key_id(default_key_id(), taken)
+    elif key_id in taken:
+        raise CliError(
+            f"Key id {key_id!r} is already used by another key in {store}. "
+            "Key ids must be unique within a store, or signatures made with "
+            "the older key stop verifying. Choose a different --key-id."
+        )
     keypair = generate_keypair(
         key_id=key_id,
-        expires_days=expires_days if expires_days > 0 else None,
+        expires_days=None if expires_days == 0 else expires_days,
     )
     save_keypair(keypair, store)
     print(f"Generated keypair {keypair.key_id} in {store}")
@@ -88,36 +139,74 @@ def cmd_init_keys(
 
 
 def cmd_sign_all(palace: Path) -> int:
+    """Sign every signable file, naming and skipping the ones that fail.
+
+    One unreadable file used to abort the whole run, unnamed, leaving every
+    later file unsigned.  Each failure is now reported with its path, the run
+    continues, and the exit status is 1 if anything was skipped so a pipeline
+    cannot mistake a partial run for a clean one.
+    """
     config = _load_config(palace)
     keystore = load_keystore(config.key_store_path)
+    escaped: list[Path] = []
     count = 0
-    for path in iter_signable_files(palace):
-        sign_file(path, palace, keystore.active)
+    skipped: list[str] = []
+    for path in iter_signable_files(palace, escaped):
+        try:
+            sign_file(path, palace, keystore.active)
+        except UnicodeDecodeError:
+            skipped.append(f"{path.relative_to(palace)}: not valid UTF-8")
+            continue
+        except OSError as exc:
+            skipped.append(f"{path.relative_to(palace)}: {exc.strerror or exc}")
+            continue
         count += 1
+    for path in escaped:
+        skipped.append(f"{path.relative_to(palace)}: symlink resolves outside the palace")
+    for line in skipped:
+        print(f"skipped {line}", file=sys.stderr)
     print(f"Signed {count} file{'s' if count != 1 else ''} with key {keystore.active.key_id}")
+    if skipped:
+        print(f"Skipped {len(skipped)} file{'s' if len(skipped) != 1 else ''}", file=sys.stderr)
+        return 1
     return 0
 
 
 def cmd_verify_all(palace: Path) -> int:
     config = _load_config(palace)
     keystore = load_keystore(config.key_store_path)
+    escaped: list[Path] = []
     total = failed = 0
-    for path in iter_signable_files(palace):
+    for path in iter_signable_files(palace, escaped):
         total += 1
         result = verify_file(path, palace, keystore)
         if not result.trusted:
             failed += 1
         status = "ok  " if result.trusted else "FAIL"
         print(f"{status} {path.relative_to(palace)}  ({result.reason})")
+    for path in escaped:
+        print(
+            f"FAIL {path.relative_to(palace)}  (symlink resolves outside the palace)",
+            file=sys.stderr,
+        )
     print(f"{total - failed}/{total} files verified")
-    return 1 if failed else 0
+    if total == 0 and not escaped:
+        # A gate that passes because it looked at nothing is worse than one
+        # that fails: the usual cause is verify-all pointed at the wrong root.
+        print(f"locus-security: no signable files found in {palace}", file=sys.stderr)
+        return 1
+    return 1 if (failed or escaped) else 0
 
 
-def cmd_rotate_keys(palace: Path) -> int:
+def cmd_rotate_keys(palace: Path, expires_days: int = 365) -> int:
     config = _load_config(palace)
     keystore = load_keystore(config.key_store_path)
     old_id = keystore.active.key_id
-    new_key = rotate_keypair(keystore, config.key_store_path)
+    new_key = rotate_keypair(
+        keystore,
+        config.key_store_path,
+        expires_days=None if expires_days == 0 else expires_days,
+    )
     print(f"Rotated key {old_id} to {new_key.key_id}")
     print(f"  retired public key kept in {config.key_store_path / 'retired'}")
     return 0
@@ -126,6 +215,24 @@ def cmd_rotate_keys(palace: Path) -> int:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _expires_days(value: str) -> int:
+    """argparse type for ``--expires-days``: a non-negative integer.
+
+    A negative value used to fall through the ``> 0`` guard and silently mean
+    "never expires", which is the opposite of what someone typing ``-5``
+    intends.
+    """
+    try:
+        days = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an integer: {value!r}") from None
+    if days < 0:
+        raise argparse.ArgumentTypeError(
+            f"must be 0 (never expires) or a positive number of days, got {days}"
+        )
+    return days
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -152,7 +259,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--key-id", default=None, help="Key identifier (default: locus-YYYY-MM-DD).")
     p_init.add_argument(
         "--expires-days",
-        type=int,
+        type=_expires_days,
         default=365,
         help="Days until the key expires; 0 means never (default: 365).",
     )
@@ -160,7 +267,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     add_palace(sub.add_parser("sign-all", help="Sign every markdown file in the palace."))
     add_palace(sub.add_parser("verify-all", help="Verify every markdown file; exit 1 on any failure."))
-    add_palace(sub.add_parser("rotate-keys", help="Retire the active key and generate a new one."))
+    p_rotate = sub.add_parser("rotate-keys", help="Retire the active key and generate a new one.")
+    add_palace(p_rotate)
+    p_rotate.add_argument(
+        "--expires-days",
+        type=_expires_days,
+        default=365,
+        help="Days until the new key expires; 0 means never (default: 365).",
+    )
     return parser
 
 
@@ -178,8 +292,11 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sign_all(palace)
         if args.command == "verify-all":
             return cmd_verify_all(palace)
-        return cmd_rotate_keys(palace)
-    except (CliError, FileNotFoundError, ValueError) as exc:
+        return cmd_rotate_keys(palace, args.expires_days)
+    except (CliError, OSError, ValueError) as exc:
+        # ValueError covers KeyLoadError (bad or missing passphrase) and the
+        # signing module's own validation; OSError covers a missing or
+        # unreadable key store.  Neither carries key material in its message.
         print(f"locus-security: {exc}", file=sys.stderr)
         return 1
 

@@ -141,7 +141,7 @@ is outside the agent's allowed write paths.
 1. `locus-security init-keys --palace <path>` generates a fresh Ed25519 keypair
 2. All Write operations are auto-signed with the active key
 3. Verification checks the active key and all retired keys — old signatures remain valid after rotation
-4. `locus-security rotate-keys --palace <path>` archives the current public key to `retired/`, generates a new active pair. The old private key is never retained after rotation.
+4. `locus-security rotate-keys --palace <path>` archives the current public key to `retired/`, generates a new active pair. The old private key is never retained after rotation. The new key gets a date-stamped id, suffixed (`locus-2026-03-01-2`) if that date is already taken, because the id is both the retired archive filename and the lookup key in `find_by_id`, which prefers the active key: two keys sharing an id would lose the retired public key and fail every signature made with it.
 
 **Passphrase encryption:** set `LOCUS_SIGNING_PASSPHRASE` in the environment. The private key PEM is encrypted with AES-256-CBC (PKCS8 `BestAvailableEncryption`). If unset, the key is stored unencrypted — acceptable for local single-user palaces, not recommended for shared/server deployments.
 
