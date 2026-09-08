@@ -66,7 +66,7 @@ uv sync --extra dev
 Verify the environment:
 
 ```sh
-# Unit tests: all 465 must pass
+# Unit tests: all must pass
 uv run pytest tests/unit/ -v
 
 # MCP integration benchmark — smoke-test the live server
@@ -87,7 +87,8 @@ locus/
   agent/          Python Agent SDK — CLI entrypoint, metrics collector
   audit/          Palace health auditor (locus-audit CLI)
   feedback/       Inferred feedback signal classifier
-  cli.py          `locus` console script: dispatches `recall` before importing the SDK
+  cli.py          `locus` console script: dispatches recall/lint/index/init
+                  before importing the SDK
   recall/         locus recall (FTS5 index shared with memory_search)
     frontmatter.py  Dependency-free frontmatter parser
     config.py       Root resolution (--root, .locus.toml, LOCUS_PALACE), cache path
@@ -107,9 +108,11 @@ locus/
     middleware.py   SecurityContext, SecurityMiddleware (Pre/PostToolUse hooks)
     main.py         CLI (locus-security): init-keys, sign-all, verify-all, rotate-keys
     __init__.py     Public API: build_security_context()
+  scaffold.py     Packaged templates/ and example-palace/, and `locus init`
   utils.py        Shared utilities — slug_from_path()
 spec/             Palace convention definitions (the shared contract between agents)
-templates/        Copy-paste starting points for palace files and locus-security.yaml
+templates/        Palace and config templates, read by `locus init --show` and
+                  `locus-security init-config` (both trees ship inside the wheel)
 skills/
   claude/         SKILL.md files for Claude Code + Agent SDK (the only maintained set)
 docs/             Reference documentation (architecture, security, benchmarks, onboarding)
@@ -117,9 +120,9 @@ docs/             Reference documentation (architecture, security, benchmarks, o
   img/            Generated SVG charts
 scripts/          Developer tools (benchmarks, chart generation)
 tests/
-  unit/           256 unit tests covering all layers
+  unit/           Unit tests covering all layers (`make test` for the count)
   fixtures/       palace/ and flat-palace/ for benchmark comparison
-example-palace/   Copy-paste template to create a new palace
+example-palace/   Palace template; `locus init` writes it into a new palace
 ```
 
 ---

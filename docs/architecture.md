@@ -131,20 +131,21 @@ configuration reference, and design decisions.
 Locus is agent-agnostic. The same palace filesystem is shared across all runtimes.
 SKILL.md files are the primary interface; MCP is the secondary, protocol-native interface.
 
+`skills/claude/` is the only maintained skill set. Locus ships no per-runtime copies:
+another runtime either speaks MCP, which is runtime-neutral, or adapts the Claude
+SKILL.md files into whatever format it expects.
+
 ```mermaid
 flowchart LR
     subgraph RUNTIMES["Agent Runtimes"]
         CC["Claude Code CLI"]
         SDK["Claude Agent SDK"]
-        CX["Codex"]
-        GM["Gemini"]
+        OTHER["Codex · Gemini · other"]
     end
 
     subgraph INTERFACES["Locus Interfaces"]
-        SKILL["SKILL.md<br/>~/.claude/skills/locus/"]
+        SKILL["SKILL.md<br/>skills/claude/ · installed to ~/.claude/skills/"]
         MCP["MCP Server<br/>locus-mcp · stdio"]
-        CSKILL[".codex/commands/locus/"]
-        GSKILL[".gemini/SKILL.md"]
     end
 
     PALACE["🏛️  Palace<br/>~/.locus/ or .locus/"]
@@ -152,13 +153,11 @@ flowchart LR
     CC -->|"skill invocation"| SKILL
     SDK -->|"setting_sources"| SKILL
     CC -->|".mcp.json"| MCP
-    CX --> CSKILL
-    GM --> GSKILL
+    OTHER -->|"stdio"| MCP
+    OTHER -.->|"adapt, not vendored"| SKILL
 
     SKILL --> PALACE
     MCP --> PALACE
-    CSKILL --> PALACE
-    GSKILL --> PALACE
 ```
 
 > **SDK caveat:** `allowed-tools` frontmatter in SKILL.md is honoured by

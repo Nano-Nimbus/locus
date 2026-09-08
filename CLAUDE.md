@@ -6,9 +6,10 @@ Guidance for Claude Code (claude.ai/code) working in this repository.
 
 Locus is a hierarchical markdown memory system for autonomous AI agents (a "palace":
 directory = room, file = knowledge, navigated on demand instead of loaded all at once).
-It ships as four things: SKILL.md files for Claude/Codex/Gemini, an MCP server
-(`locus-mcp`), a Python Agent SDK entrypoint (`locus`), and standalone CLI tools for
-retrieval, conformance, and security. Current package version: 0.10.0.
+It ships as four things: SKILL.md files for Claude Code (`skills/claude/`, the only
+maintained set; other runtimes adapt these files rather than getting a vendored copy),
+an MCP server (`locus-mcp`), a Python Agent SDK entrypoint (`locus`), and standalone
+CLI tools for retrieval, conformance, and security. Current package version: 0.10.0.
 
 For the full pitch, structure diagram, and contributor workflow see
 [`README.md`](README.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md). This file only
@@ -38,8 +39,8 @@ Plus `locus/cli.py` (console-script dispatch, see below) and `locus/utils.py`
 `locus-security`.
 
 `locus` is not one command, it is a router. `locus/cli.py` inspects `sys.argv[1]`:
-`recall`, `lint`, and `index` are dispatched straight to `locus.recall.main` and
-`locus.conform.main`, without importing the Agent SDK. Everything else falls through
+`recall`, `lint`, `index`, and `init` are dispatched straight to `locus.recall.main`,
+`locus.conform.main`, and `locus.scaffold`, without importing the Agent SDK. Everything else falls through
 to `locus.agent.main:cli` (the `--palace ... --task ...` agent run), which does
 import the SDK. This matters for anything that shells out to `locus` from a hook or
 a CI job: `locus lint --check` and `locus recall ...` stay cheap only if nothing adds

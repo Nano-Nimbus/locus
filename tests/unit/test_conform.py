@@ -601,7 +601,10 @@ class TestCliDispatch:
         # subcommands are dispatched from locus.cli before it is imported.
         from locus.cli import _SUBCOMMANDS
 
-        assert {"recall", "lint", "index"} <= set(_SUBCOMMANDS)
+        # Exact, not a subset check: this is a deliberately curated allowlist of
+        # commands cheap enough to dispatch without the Agent SDK, and a subset
+        # check would let an unreviewed addition grow it silently.
+        assert set(_SUBCOMMANDS) == {"recall", "lint", "index", "init"}
         for module_name, function_name in _SUBCOMMANDS.values():
             module = __import__(module_name, fromlist=[function_name])
             assert callable(getattr(module, function_name))

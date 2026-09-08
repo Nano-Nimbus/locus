@@ -148,6 +148,71 @@ class TestCopyExamplePalace:
             copy_example_palace(palace)
         assert not outside.exists()
 
+    def test_force_does_not_bypass_the_symlink_guard(self, tmp_path: Path) -> None:
+        """`--force` means "overwrite the file I named", not "follow a symlink
+        out of the palace". The guard must run before the force/exists check
+        at every call site, not be skippable by the caller that most wants to
+        overwrite something."""
+        palace = tmp_path / "palace"
+        palace.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (palace / "global").symlink_to(elsewhere, target_is_directory=True)
+        with pytest.raises(ScaffoldError, match="symlink"):
+            copy_example_palace(palace, force=True)
+        assert list(elsewhere.rglob("*")) == []
+
+    def test_an_existing_symlinked_target_is_refused_not_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """Without ``force`` an existing target is normally skipped, so this
+        is what pins the guard *ahead of* the exists/force branch rather than
+        merely ahead of the write.
+
+        The symlink is planted at a *file* target on purpose. A symlinked
+        directory component is caught a second time by the directory pass at
+        the end, which hides the ordering; a leaf file has no such backstop,
+        so this is the only case that pins it. The planted target makes
+        ``target.exists()`` true, and if the guard ran after that branch the
+        symlink would be quietly counted as "already there", left in place,
+        and reported as a clean skip, leaving the next writer to follow it
+        out of the palace.
+        """
+        palace = tmp_path / "palace"
+        palace.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_text("not the packaged template\n", encoding="utf-8")
+        (palace / "INDEX.md").symlink_to(outside)
+        with pytest.raises(ScaffoldError, match="symlink"):
+            copy_example_palace(palace)
+        assert outside.read_text(encoding="utf-8") == "not the packaged template\n"
+
+    @pytest.mark.parametrize("force", [False, True])
+    def test_refuses_a_symlinked_room_that_holds_only_a_marker(
+        self, tmp_path: Path, force: bool
+    ) -> None:
+        """The directory pass carries its own guard, and it is the only thing
+        covering a room the file pass never visits.
+
+        `sessions/` holds nothing but a VCS marker, so `_iter_tree` yields no
+        file under it and no file target is ever built there. Only the
+        directory pass creates it. Without the guard on that pass, a symlink
+        planted at `sessions/` is followed by `mkdir(exist_ok=True)`, the copy
+        reports success, and the palace's session room is silently an alias
+        for a directory outside the palace: every session log written
+        afterwards lands there.
+        """
+        palace = tmp_path / "palace"
+        (palace / "global" / "toolchain").mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (palace / "global" / "toolchain" / "sessions").symlink_to(
+            outside, target_is_directory=True
+        )
+        with pytest.raises(ScaffoldError, match="symlink"):
+            copy_example_palace(palace, force=force)
+        assert list(outside.rglob("*")) == []
+
 
 class TestWriteSecurityConfig:
     def test_writes_the_packaged_template(self, tmp_path: Path) -> None:
@@ -174,6 +239,18 @@ class TestWriteSecurityConfig:
         with pytest.raises(ScaffoldError, match="symlink"):
             write_security_config(tmp_path)
         assert not outside.exists()
+
+    def test_force_does_not_bypass_the_symlink_guard(self, tmp_path: Path) -> None:
+        """`--force` authorizes overwriting the named file, not following a
+        symlink to write somewhere else. Verified with a real target (not
+        dangling) so `force=True` would otherwise clear the exists() check
+        and reach the copy."""
+        outside = tmp_path / "outside.yaml"
+        outside.write_text("not the packaged config\n", encoding="utf-8")
+        (tmp_path / SECURITY_CONFIG_NAME).symlink_to(outside)
+        with pytest.raises(ScaffoldError, match="symlink"):
+            write_security_config(tmp_path, force=True)
+        assert outside.read_text(encoding="utf-8") == "not the packaged config\n"
 
 
 class TestInitCommand:
