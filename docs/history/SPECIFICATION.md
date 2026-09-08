@@ -1,5 +1,18 @@
 # Project: Locus
 
+> **Historical document.** This is the v0.1 design brief for Locus, written before any
+> code existed. It is superseded by the current specification set under
+> [`spec/`](../../spec/); start there for how Locus actually behaves. It is kept here
+> because it is the only record of why the project is named Locus (the Method of Loci)
+> and the constraints it was founded on.
+>
+> Two of its forward-looking notes have since shipped: "v2: search capability
+> (grep/FTS), likely the point where MCP becomes the right interface" (below, under
+> Discovery & Reading) is now `locus recall` plus the `memory_search` MCP tool (see
+> [`spec/recall.md`](../../spec/recall.md) and [`spec/mcp-server.md`](../../spec/mcp-server.md)),
+> and the "foundation for the v0.5 MCP server" note (under Runtime) is `locus-mcp`,
+> which shipped in v0.5.0.
+
 ## Pretext
 
 Using markdown-based memory across multiple AI-assisted projects, a recurring pattern emerged:

@@ -51,6 +51,7 @@ Open a PR with all reference updates. Merge this before executing Phase 1.
 
 **`SPECIFICATION.md`**
 - GitHub URL reference
+- Note (2026-09-07): this file has since moved to `docs/history/SPECIFICATION.md`, superseded by `spec/` (#60)
 
 **`server.json`** (MCP Official Registry format)
 - `"name"`: `io.github.EDKarlsson/locus` → `io.github.Nano-Nimbus/locus`

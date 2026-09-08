@@ -1,91 +1,88 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) working in this repository.
 
-## Project Purpose
+## What Locus is
 
-**Locus** is a hierarchical markdown-based memory system for AI agents — each directory is a "room" (locus) in the palace, containing specific knowledge navigated on demand. Keeps context windows small while enabling precise, deep recall. Named for the atomic unit of the Method of Loci.
+Locus is a hierarchical markdown memory system for autonomous AI agents (a "palace":
+directory = room, file = knowledge, navigated on demand instead of loaded all at once).
+It ships as four things: SKILL.md files for Claude/Codex/Gemini, an MCP server
+(`locus-mcp`), a Python Agent SDK entrypoint (`locus`), and standalone CLI tools for
+retrieval, conformance, and security. Current package version: 0.10.0.
 
-Must be **agent-agnostic**: usable by Claude, Codex, Gemini, or any LLM-based agent.
+For the full pitch, structure diagram, and contributor workflow see
+[`README.md`](README.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md). This file only
+covers what a coding agent needs to orient fast.
 
-## Existing Memory Patterns to Study
+## Module layout
 
-Before writing anything new, read these reference implementations:
+Seven packages under `locus/`. Six of them have their own `main.py`;
+`locus/feedback/` is the exception, it has no CLI and no `main.py`:
 
-| Location | What it shows |
+| Module | Purpose |
 |---|---|
-| `~/.claude/projects/<project>/memory/` | 8-file memory system: MEMORY.md + specialty files |
-| `~/.claude/projects/<project>/memory/` | Multi-agent orchestration memory |
-| `~/.claude/skills/*/SKILL.md` | Skill definition format (9 skills to study) |
-| `~/.claude/commands/` | Command format for reusable workflows |
+| `locus/agent/` | Agent SDK entrypoint (the `locus` CLI when no subcommand matches), run metrics |
+| `locus/audit/` | Palace health auditor (`locus-audit` CLI): scanner, scorer, report |
+| `locus/conform/` | OKF conformance: `locus lint` and `locus index` (rules, fixer, generators) |
+| `locus/feedback/` | Inferred disagreement-signal classifier consumed by the Locus skill layer (see `spec/inferred-feedback.md`); not imported by the Agent SDK runtime, no `main.py` |
+| `locus/mcp/` | MCP server (`locus-mcp` CLI): palace resolution, path safety, tool handlers |
+| `locus/recall/` | `locus recall`: SQLite FTS5 index shared with the `memory_search` MCP tool |
+| `locus/security/` | Ed25519 signing system (`locus-security` CLI): keys, taint, nonce, middleware |
 
-A mature memory directory typically has a ~200-line MEMORY.md plus specialty files for gotchas, deployments, and platform services.
+Plus `locus/cli.py` (console-script dispatch, see below) and `locus/utils.py`
+(shared helpers, e.g. `slug_from_path`).
 
-## Memory File Conventions (from existing projects)
+## Console scripts and dispatch
 
-**Structure of MEMORY.md:**
-1. Project overview (1–3 sentences + key stats)
-2. Architecture/topology
-3. Configuration sections by subsystem
-4. Key file paths
-5. Current phase/status
-6. References to specialty files
+`pyproject.toml` defines four entry points: `locus`, `locus-audit`, `locus-mcp`,
+`locus-security`.
 
-**Specialty file patterns:**
-- `technical-gotchas.md` — header-per-issue, symptom → root cause → resolution
-- `platform-services.md` — quick-reference table (service → version → IP/config)
-- `deployment-issues.md` — numbered issues with detailed logging
+`locus` is not one command, it is a router. `locus/cli.py` inspects `sys.argv[1]`:
+`recall`, `lint`, and `index` are dispatched straight to `locus.recall.main` and
+`locus.conform.main`, without importing the Agent SDK. Everything else falls through
+to `locus.agent.main:cli` (the `--palace ... --task ...` agent run), which does
+import the SDK. This matters for anything that shells out to `locus` from a hook or
+a CI job: `locus lint --check` and `locus recall ...` stay cheap only if nothing adds
+an import that drags in `claude_agent_sdk` above the dispatch table.
 
-**Context window discipline:** MEMORY.md is always loaded (~200 line limit enforced by auto-memory system). Specialty files are read on demand. This is the core design constraint the skill must encode.
+## Tests and lint
 
-## Runtime Architecture
-
-Locus has two complementary interfaces:
-
-**1. SKILL.md files** — the primary interface. Skills live in `~/.claude/skills/<name>/SKILL.md`
-and are compatible with both Claude Code CLI and the Claude Agent SDK
-(`settingSources: ["user", "project"]`). The existing 9 skills are references:
-`guided-walkthrough`, `project-triage`, `knowledge-capture`, etc.
-
-**2. Agent SDK entrypoint** (`locus/agent/`) — a Python application using
-`claude_agent_sdk` that runs Locus autonomously against a palace directory.
-Used for benchmarking, integration testing, and as the foundation for the
-v0.5 MCP server.
-
-```python
-# SDK configuration pattern
-ClaudeAgentOptions(
-    cwd=palace_path,
-    setting_sources=["user", "project"],  # loads SKILL.md files
-    allowed_tools=["Skill", "Read", "Write", "Bash"],
-)
+```sh
+make test   # uv run pytest tests/unit/ -q
+make lint   # uv run ruff check locus/ tests/
 ```
 
-**Critical:** `allowed-tools` frontmatter in SKILL.md is only honoured by Claude Code CLI,
-not the Agent SDK. Never rely on it — control tool access via the host `allowedTools` config.
+Equivalent to running `uv sync --extra dev` once, then the two `uv run` commands
+directly. CI runs the test suite on Python 3.11 and 3.12 (`.github/workflows/ci.yml`).
+There is no repo-wide ruff config file, so `make lint` enforces ruff's own defaults,
+not a tuned rule set.
 
-## Cross-Agent Compatibility
+`ruff` is not currently in the `dev` extra in `pyproject.toml`, so on a clean
+checkout `make lint` fails to spawn until that is fixed. Until then, run
+`uvx ruff check locus/ tests/` instead.
 
-Skills mirror across agents:
-- Claude: `~/.claude/skills/` · Agent SDK: `settingSources: ["user", "project"]`
-- Codex: `.codex/commands/` in project repos
-- Gemini: `.gemini/` in project repos + GitHub Actions via `add-gemini-action`
+## Conventions easy to get wrong
 
-SKILL.md files must work without `allowed-tools` frontmatter to remain SDK-compatible.
+- **Filesystem case sensitivity.** Root classification in `locus/conform/` tells an
+  OKF bundle (`index.md`), a palace (`INDEX.md`), and a Claude Code memory directory
+  (`MEMORY.md`) apart by filename. macOS and Windows filesystems are case-insensitive,
+  so `Path("index.md").is_file()` also matches an existing `INDEX.md`. Anything that
+  needs to distinguish these must use `locus.conform.model.has_file()`, which lists
+  the directory and compares names exactly, not `Path.is_file()`.
+- **`main` is branch-protected.** Every change goes through a PR from a feature
+  branch; direct pushes to `main` are rejected. See `CONTRIBUTING.md` section 5 for
+  the squash-merge and post-merge reset workflow.
+- **The security module's `session_tainted` latch is one-way.** Once a session
+  observes tainted content it stays tainted for the rest of that session
+  (`locus/security/taint.py`). Do not add a code path that clears it.
+- **`locus/mcp/palace.py` is the safety boundary.** Every MCP filesystem operation
+  (path traversal guards, write-blocked directories, palace root resolution) flows
+  through it. Changes there affect every tool in `locus/mcp/server.py`.
 
-## Development Process (from SPECIFICATION.md)
+## Where the normative specs live
 
-1. **Analysis phase** — full project analysis + generate clarifying questions
-2. **Project plan** — export to GitHub, GitLab, or YouTrack (best judgement call)
-3. **Phase breakdown** — map tasks to the project plan interface
-4. **Multi-agent review** — code reviewed by multiple agents covering:
-   - Unit tests + code coverage
-   - Architecture analysis
-   - Security analysis and testing
-   - Integration testing
-5. **Local agent leverage** — use Gemini, Codex, and Claude in parallel
-
-## Related Resources
-
-- `~/.claude/projects/<project>/memory/` — study any mature memory directory for `technical-gotchas.md` and `worktree-workflow.md` file format patterns
-- The `example-palace/` directory in this repo is the canonical reference for palace structure
+`spec/` is the current, authoritative specification set (index format, room
+conventions, size limits, recall ranking, lint/index rules, MCP server contract,
+audit algorithm, security). `SPECIFICATION.md` at the repo root was the original
+v0.1 design brief and is now historical; it has moved to
+[`docs/history/SPECIFICATION.md`](docs/history/SPECIFICATION.md).

@@ -6,7 +6,7 @@ Audit baseline from:
 
 - `README.md`
 - `CLAUDE.md`
-- `SPECIFICATION.md`
+- `SPECIFICATION.md` (since moved to [`docs/history/SPECIFICATION.md`](../history/SPECIFICATION.md), see #60)
 
 Validation pass covered local tests, packaging/CLI smoke checks, CI workflow review, and spec-to-implementation alignment.
 
