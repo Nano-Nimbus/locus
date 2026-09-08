@@ -2,13 +2,17 @@
 
 Usage
 -----
+    locus-security init-config --palace PATH [--force]
     locus-security init-keys   --palace PATH [--key-id ID] [--expires-days N] [--force]
     locus-security sign-all    --palace PATH
     locus-security verify-all  --palace PATH
     locus-security rotate-keys --palace PATH
 
-Every subcommand reads ``locus-security.yaml`` from the palace root to find
-the key store (``key_store``, default ``.security/keys/``).  Set
+Every subcommand except ``init-config`` reads ``locus-security.yaml`` from
+the palace root to find the key store (``key_store``, default
+``.security/keys/``).  ``init-config`` is what writes that file: it copies
+the annotated template that ships inside the package, so the setup works
+from a ``pip install`` with no repository checkout.  Set
 ``LOCUS_SIGNING_PASSPHRASE`` to encrypt the private key at rest; the same
 variable must be set again whenever the key is loaded.
 
@@ -34,6 +38,8 @@ import logging
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+
+from locus.scaffold import SECURITY_CONFIG_NAME, ScaffoldError, write_security_config
 
 from .config import SecurityConfig, load_security_config
 from .keys import (
@@ -70,8 +76,8 @@ def _load_config(palace: Path) -> SecurityConfig:
     config = load_security_config(palace)
     if config is None:
         raise CliError(
-            f"No locus-security.yaml found in {palace}. "
-            "Copy templates/locus-security.yaml to the palace root first."
+            f"No {SECURITY_CONFIG_NAME} found in {palace}. "
+            f"Run: locus-security init-config --palace {palace}"
         )
     return config
 
@@ -125,6 +131,26 @@ def _reject_expired(keypair: KeyPair) -> None:
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
+
+def cmd_init_config(palace: Path, force: bool = False) -> int:
+    """Write the annotated ``locus-security.yaml`` template into the palace.
+
+    The template ships inside the wheel, so this works from a ``pip install``
+    with no repository checkout.  An existing config is kept unless ``force``
+    is given: it holds a tuned boundary policy, and silently replacing it with
+    the defaults would loosen enforcement without telling anyone.
+    """
+    try:
+        path, written = write_security_config(palace, force=force)
+    except ScaffoldError as exc:
+        raise CliError(str(exc)) from None
+    if not written:
+        print(f"{path} already exists; left unchanged (use --force to overwrite).")
+        return 0
+    print(f"Wrote {path}")
+    print(f"  next: locus-security init-keys --palace {palace}")
+    return 0
+
 
 def cmd_init_keys(
     palace: Path,
@@ -309,8 +335,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "--palace",
             required=True,
             type=Path,
-            help="Path to the palace root (must contain locus-security.yaml).",
+            help="Path to the palace root (must contain locus-security.yaml, "
+            "which init-config writes).",
         )
+
+    p_config = sub.add_parser(
+        "init-config",
+        help=f"Write {SECURITY_CONFIG_NAME} into the palace from the packaged template.",
+    )
+    add_palace(p_config)
+    p_config.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing config with the packaged defaults.",
+    )
 
     p_init = sub.add_parser("init-keys", help="Generate the active Ed25519 keypair.")
     add_palace(p_init)
@@ -349,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"Palace path does not exist: {palace}")
 
     try:
+        if args.command == "init-config":
+            return cmd_init_config(palace, args.force)
         if args.command == "init-keys":
             return cmd_init_keys(palace, args.key_id, args.expires_days, args.force)
         if args.command == "sign-all":

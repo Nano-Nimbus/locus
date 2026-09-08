@@ -29,18 +29,25 @@ pip install -e .
 
 ## 2. Create a palace
 
-Copy the INDEX.md template and create your first room:
+`locus init` writes the example palace (INDEX.md, a global room, a project
+room, and their `sessions/` directories) from the templates that ship inside
+the package, so it works from a `pip install` with no checkout:
 
 ```sh
-# Create palace root
-mkdir -p ~/.locus/global/toolchain/sessions
-mkdir -p ~/.locus/projects/my-project/sessions
-
-# Copy templates
-cp templates/INDEX.md ~/.locus/INDEX.md
-cp templates/room/room-name.md ~/.locus/global/toolchain/toolchain.md
-cp templates/room/sessions/YYYY-MM-DD.md ~/.locus/global/toolchain/sessions/
+locus init ~/.locus
 ```
+
+To add another room later, print the packaged room templates and fill them in:
+
+```sh
+mkdir -p ~/.locus/projects/my-project/sessions
+locus init --show templates/room/room-name.md > ~/.locus/projects/my-project/my-project.md
+locus init --show templates/room/sessions/YYYY-MM-DD.md > ~/.locus/projects/my-project/sessions/2026-03-02.md
+```
+
+`locus init --show list` names every packaged template. The same files live at
+`templates/` and `example-palace/` in the repository, which is where to read
+them when you have a checkout.
 
 Edit `~/.locus/INDEX.md` — fill in your palace name and room entries.
 Keep it under 50 lines. This is the only file loaded automatically.
@@ -153,8 +160,10 @@ shared across processes, or when you want cryptographic audit trails.
 
 **Step 1 — Copy and configure:**
 ```sh
-cp templates/locus-security.yaml ~/.locus/locus-security.yaml
-# Edit to adjust boundary criticality levels and signing settings
+locus-security init-config --palace ~/.locus
+# Writes ~/.locus/locus-security.yaml from the packaged, annotated template.
+# Edit it to adjust boundary criticality levels and signing settings.
+# An existing config is kept; pass --force to replace it with the defaults.
 ```
 
 **Step 2 — Initialize keys:**
