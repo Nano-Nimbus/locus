@@ -273,14 +273,14 @@ KUBECONFIG=~/.kube/config-asgard kubectl --context=tailscale-operator.oryx-tegu.
 
 **Local git remote** (if not already updated in Phase 1):
 ```sh
-cd /home/dank/git/valhalla/locus
+cd /home/alice/projects/locus
 git remote set-url origin https://github.com/Nano-Nimbus/locus.git
 git remote -v
 ```
 
 **Wiki re-clone:**
 ```sh
-cd /home/dank/git/valhalla
+cd /home/alice/projects
 mv locus.wiki locus.wiki.old
 git clone https://github.com/Nano-Nimbus/locus.wiki.git locus.wiki
 ```

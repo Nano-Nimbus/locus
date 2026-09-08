@@ -128,10 +128,10 @@ class TestLintConformance:
         root = tmp_path / "bundle"
         root.mkdir()
         (root / "a.md").write_text(
-            "---\ntype: Reference\nverified:\n  by: human:dank\n  at: 2026-05-01T00:00:00Z\n---\n"
+            "---\ntype: Reference\nverified:\n  by: human:alice\n  at: 2026-05-01T00:00:00Z\n---\n"
         )
         (root / "b.md").write_text(
-            "---\ntype: Reference\nverified:\n  - by: human:dank\n    at: 2026-05-01T00:00:00Z\n---\n"
+            "---\ntype: Reference\nverified:\n  - by: human:alice\n    at: 2026-05-01T00:00:00Z\n---\n"
         )
         assert lint_root(root, ConformConfig()) == []
 
@@ -327,21 +327,21 @@ class TestFix:
         assert "status: deprecated" in updated
 
     def test_insert_generated_at_handles_block_and_flow_mappings(self) -> None:
-        block = "---\ngenerated:\n  by: human:dank\ntitle: A\n---\n"
+        block = "---\ngenerated:\n  by: human:alice\ntitle: A\n---\n"
         assert insert_generated_at(block, "2026-05-01T00:00:00Z") == (
-            "---\ngenerated:\n  by: human:dank\n  at: 2026-05-01T00:00:00Z\ntitle: A\n---\n"
+            "---\ngenerated:\n  by: human:alice\n  at: 2026-05-01T00:00:00Z\ntitle: A\n---\n"
         )
-        flow = "---\ngenerated: { by: human:dank }\n---\n"
+        flow = "---\ngenerated: { by: human:alice }\n---\n"
         assert insert_generated_at(flow, "2026-05-01T00:00:00Z") == (
-            "---\ngenerated: { by: human:dank, at: 2026-05-01T00:00:00Z }\n---\n"
+            "---\ngenerated: { by: human:alice, at: 2026-05-01T00:00:00Z }\n---\n"
         )
         assert insert_generated_at("---\ngenerated: a-scalar\n---\n", "x") is None
         assert insert_generated_at("# no frontmatter\n", "x") is None
 
     def test_insert_generated_at_preserves_crlf(self) -> None:
-        block = "---\r\ngenerated:\r\n  by: human:dank\r\ntitle: A\r\n---\r\n"
+        block = "---\r\ngenerated:\r\n  by: human:alice\r\ntitle: A\r\n---\r\n"
         assert insert_generated_at(block, "2026-05-01T00:00:00Z") == (
-            "---\r\ngenerated:\r\n  by: human:dank\r\n"
+            "---\r\ngenerated:\r\n  by: human:alice\r\n"
             "  at: 2026-05-01T00:00:00Z\r\ntitle: A\r\n---\r\n"
         )
 
@@ -349,7 +349,7 @@ class TestFix:
         root = tmp_path / "repo"
         root.mkdir()
         target = root / "note.md"
-        target.write_text("---\ntype: Reference\ngenerated:\n  by: human:dank\n---\n# Note\n")
+        target.write_text("---\ntype: Reference\ngenerated:\n  by: human:alice\n---\n# Note\n")
 
         def git(*args: str) -> None:
             subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)

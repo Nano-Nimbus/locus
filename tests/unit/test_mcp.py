@@ -504,8 +504,8 @@ class TestFindAutoMemory:
         assert slug == "-home-user-proj"
 
     def test_slug_derivation_nested(self) -> None:
-        slug = _slug_from_path(Path("/home/dank/git/valhalla/locus"))
-        assert slug == "-home-dank-git-valhalla-locus"
+        slug = _slug_from_path(Path("/home/alice/projects/locus"))
+        assert slug == "-home-alice-projects-locus"
 
     def test_auto_memory_found(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_home = tmp_path / "home"
