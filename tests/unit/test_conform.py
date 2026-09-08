@@ -102,6 +102,14 @@ class TestLintConformance:
         found = rules(by_name(lint_root(BROKEN, ARCHIVE_CONFIG), "unterminated.md"))
         assert found == {"okf.frontmatter-unparseable"}
 
+    def test_unterminated_frontmatter_in_log_is_reported(self, tmp_path: Path) -> None:
+        # log.md has its own rule function; it must not skip this check just
+        # because doc.frontmatter is {} for an unterminated block too.
+        root = tmp_path / "bundle"
+        root.mkdir()
+        (root / "log.md").write_text("---\ntitle: oops\n## 2026-01-01\n- an entry\n")
+        assert rules(lint_root(root, ConformConfig())) == {"okf.frontmatter-unparseable"}
+
     def test_metadata_type_does_not_satisfy_okf_type(self) -> None:
         violation = next(iter(by_name(lint_root(BROKEN, ARCHIVE_CONFIG), "no-type.md")))
         assert violation.rule == "okf.type-missing"
@@ -292,6 +300,32 @@ class TestFix:
             "---\ntitle: A\n# a comment\ntype: Reference\n---\nbody\n"
         )
 
+    def test_insert_key_preserves_crlf_line_endings(self) -> None:
+        text = "---\r\ntitle: A\r\n---\r\nbody\r\n"
+        assert insert_key(text, "type", "Reference") == (
+            "---\r\ntitle: A\r\ntype: Reference\r\n---\r\nbody\r\n"
+        )
+
+    def test_insert_key_creates_a_crlf_block_for_a_crlf_file(self) -> None:
+        text = "# Title\r\nbody\r\n"
+        assert insert_key(text, "type", "Reference") == (
+            "---\r\ntype: Reference\r\n---\r\n\r\n# Title\r\nbody\r\n"
+        )
+
+    def test_fix_does_not_duplicate_frontmatter_on_a_crlf_file(self, tmp_path: Path) -> None:
+        # A closer regex that only matched a bare "---" missed "---\r" on a
+        # CRLF file, so insert_key thought there was no frontmatter block and
+        # prepended a second one instead of inserting into the first.
+        root = tmp_path / "bundle"
+        (root / "archive").mkdir(parents=True)
+        target = root / "archive" / "old.md"
+        target.write_text("---\r\ntype: Reference\r\n---\r\n# Old\r\n")
+        config = ConformConfig(archive_globs=["archive/*"])
+        updated = fix_text(load_doc(root, target), config, GitDates())
+        assert updated is not None
+        assert updated.count("---") == 2
+        assert "status: deprecated" in updated
+
     def test_insert_generated_at_handles_block_and_flow_mappings(self) -> None:
         block = "---\ngenerated:\n  by: human:dank\ntitle: A\n---\n"
         assert insert_generated_at(block, "2026-05-01T00:00:00Z") == (
@@ -303,6 +337,13 @@ class TestFix:
         )
         assert insert_generated_at("---\ngenerated: a-scalar\n---\n", "x") is None
         assert insert_generated_at("# no frontmatter\n", "x") is None
+
+    def test_insert_generated_at_preserves_crlf(self) -> None:
+        block = "---\r\ngenerated:\r\n  by: human:dank\r\ntitle: A\r\n---\r\n"
+        assert insert_generated_at(block, "2026-05-01T00:00:00Z") == (
+            "---\r\ngenerated:\r\n  by: human:dank\r\n"
+            "  at: 2026-05-01T00:00:00Z\r\ntitle: A\r\n---\r\n"
+        )
 
     def test_generated_at_comes_from_the_first_git_commit(self, tmp_path: Path) -> None:
         root = tmp_path / "repo"

@@ -31,7 +31,7 @@ from pathlib import Path
 from .config import ConformConfig
 from .model import Doc, load_doc, text_of
 
-_CLOSER_RE = re.compile(r"\A---[ \t]*\Z")
+_CLOSER_RE = re.compile(r"\A---[ \t]*\r?\Z")
 _GENERATED_RE = re.compile(r"\A(generated:)([ \t]*)(.*)\Z")
 
 
@@ -128,16 +128,21 @@ def insert_key(text: str, key: str, value: str) -> str:
     """Add a top-level frontmatter key, creating the block when there is none.
 
     The key goes immediately before the closing ``---`` so existing keys keep
-    their order and any comments between them survive.
+    their order and any comments between them survive.  The file's own line
+    ending, LF or CRLF, is detected once and reused: a hardcoded ``\\n`` would
+    leave the inserted line as the one line in a CRLF file that is not.
     """
+    crlf = "\r\n" in text
+    eol = "\r" if crlf else ""
     lines = text.split("\n")
     if lines and _CLOSER_RE.match(lines[0].lstrip("﻿")):
         for position in range(1, len(lines)):
             if _CLOSER_RE.match(lines[position]):
-                lines.insert(position, f"{key}: {value}")
+                lines.insert(position, f"{key}: {value}{eol}")
                 return "\n".join(lines)
-    prefix = f"---\n{key}: {value}\n---\n"
-    return prefix + ("\n" + text if text and not text.startswith("\n") else text)
+    newline = "\r\n" if crlf else "\n"
+    prefix = f"---{newline}{key}: {value}{newline}---{newline}"
+    return prefix + (newline + text if text and not text.startswith(("\n", "\r")) else text)
 
 
 def insert_generated_at(text: str, value: str) -> str | None:
@@ -146,6 +151,7 @@ def insert_generated_at(text: str, value: str) -> str | None:
     Returns ``None`` when ``generated`` is not a mapping this can extend, in
     which case the violation is reported and left for a human.
     """
+    eol = "\r" if "\r\n" in text else ""
     lines = text.split("\n")
     if not lines or not _CLOSER_RE.match(lines[0].lstrip("﻿")):
         return None
@@ -164,7 +170,7 @@ def insert_generated_at(text: str, value: str) -> str | None:
             padding = " " if inner.endswith(" ") else ""
             body = inner.rstrip()
             separator = ", " if body.strip() else ""
-            lines[position] = f"generated: {{{body}{separator}at: {value}{padding}}}"
+            lines[position] = f"generated: {{{body}{separator}at: {value}{padding}}}{eol}"
             return "\n".join(lines)
         if remainder:
             return None  # a scalar; nothing to extend
@@ -181,7 +187,7 @@ def insert_generated_at(text: str, value: str) -> str | None:
             last = child
         if indent is None:
             return None  # ``generated:`` with no children is not a mapping
-        lines.insert(last + 1, f"{' ' * indent}at: {value}")
+        lines.insert(last + 1, f"{' ' * indent}at: {value}{eol}")
         return "\n".join(lines)
     return None
 

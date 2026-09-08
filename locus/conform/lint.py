@@ -316,6 +316,14 @@ def _lint_okf_index(doc: Doc) -> list[Violation]:
 
 def _lint_okf_log(doc: Doc) -> list[Violation]:
     """``log.md`` is date-grouped, ISO 8601, newest first, and carries no frontmatter."""
+    if doc.frontmatter_state == "unterminated":
+        return [
+            Violation(
+                doc.file,
+                "okf.frontmatter-unparseable",
+                "frontmatter opens with --- but is never closed",
+            )
+        ]
     violations: list[Violation] = []
     if doc.frontmatter:
         violations.append(

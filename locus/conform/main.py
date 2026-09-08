@@ -56,7 +56,7 @@ def build_lint_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit non-zero when anything is reported. For CI.",
+        help="Exit non-zero when any error is reported (any violation with --strict). For CI.",
     )
     parser.add_argument(
         "--strict",
