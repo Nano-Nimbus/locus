@@ -286,6 +286,18 @@ Three defects a second review pass confirmed after #56 merged, plus the lint it 
 derived-cache case (rebuilt on disk) and an explicit case (left untouched, in memory),
 plus a locked-index case and one that pins the widened exception class.
 
+### `locus init`: the templates now ship in the wheel
+
+`templates/` and `example-palace/` were referenced by running code and by the
+README but were in no wheel, so `cp -r example-palace ~/.locus` and
+`cp templates/locus-security.yaml ...` were impossible for anyone who installed
+from PyPI (#62). Both trees are now force-included under `locus/_scaffold/`,
+`locus init [PATH]` writes a palace from them (`--show` prints any single
+template, `--security` adds the config), `locus-security init-config` writes
+`locus-security.yaml`, and the missing-config error names that command instead
+of a repository path. The repository copies stay where they are and remain the
+single source: the commands read the packaged copy of the same files.
+
 ---
 
 ## v0.10.0 — 2026-03-14

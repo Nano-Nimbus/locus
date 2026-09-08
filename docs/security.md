@@ -210,7 +210,10 @@ An agent can write the nonce into a file and have it auto-signed; without this c
 
 ## Configuration
 
-Copy `templates/locus-security.yaml` to your palace root and adjust:
+`locus-security init-config --palace <palace>` writes the annotated
+`locus-security.yaml` into your palace root from the template that ships
+inside the package (the repository copy is `templates/locus-security.yaml`).
+An existing config is left alone unless you pass `--force`. Adjust:
 
 ```yaml
 version: "1"
@@ -382,7 +385,8 @@ skills/claude/locus-security/
 └── SKILL.md             Agent-facing trust tag conventions and incident reporting
 
 templates/
-└── locus-security.yaml  Configuration template with all options annotated
+└── locus-security.yaml  Configuration template with all options annotated,
+                         shipped in the wheel and written by init-config
 
 tests/unit/security/
 ├── test_config.py       Config parsing and boundary defaults

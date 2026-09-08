@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from locus.security.config import load_security_config
 from locus.security.keys import load_keystore, unique_key_id, validate_key_id
 from locus.security.main import iter_signable_files, main
 from locus.security.signing import verify_file
@@ -460,3 +461,46 @@ class TestExpiryIsEnforced:
             main(["init-keys", "--palace", str(palace), "--expires-days", "100000000"])
         assert exc.value.code == 2
         assert "at most" in capsys.readouterr().err
+
+
+class TestInitConfig:
+    """init-config replaces `cp templates/locus-security.yaml ...` (issue #62).
+
+    The old instruction named a repository path, so it could not be followed
+    from a PyPI install: there is no templates/ directory next to a wheel.
+    """
+
+    def test_writes_a_loadable_config(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        assert main(["init-config", "--palace", str(tmp_path)]) == 0
+        config = load_security_config(tmp_path)
+        assert config is not None
+        assert config.key_store_path == (tmp_path / ".security/keys").resolve()
+        assert "Wrote" in capsys.readouterr().out
+
+    def test_keeps_an_existing_config(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        target = tmp_path / "locus-security.yaml"
+        target.write_text('version: "1"\nkey_store: "custom/keys/"\n')
+        assert main(["init-config", "--palace", str(tmp_path)]) == 0
+        assert "custom/keys/" in target.read_text()
+        assert "left unchanged" in capsys.readouterr().out
+
+    def test_force_overwrites(self, tmp_path: Path) -> None:
+        target = tmp_path / "locus-security.yaml"
+        target.write_text('version: "1"\nkey_store: "custom/keys/"\n')
+        assert main(["init-config", "--palace", str(tmp_path), "--force"]) == 0
+        assert "custom/keys/" not in target.read_text()
+
+    def test_init_keys_then_sign_all_works_end_to_end(self, tmp_path: Path) -> None:
+        (tmp_path / "INDEX.md").write_text("# Index\n")
+        assert main(["init-config", "--palace", str(tmp_path)]) == 0
+        assert main(["init-keys", "--palace", str(tmp_path), "--key-id", "k1"]) == 0
+        assert main(["sign-all", "--palace", str(tmp_path)]) == 0
+        assert main(["verify-all", "--palace", str(tmp_path)]) == 0
+
+    def test_missing_config_error_names_a_command_that_exists(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        assert main(["sign-all", "--palace", str(tmp_path)]) == 1
+        err = capsys.readouterr().err
+        assert "locus-security init-config --palace" in err
+        assert "templates/" not in err

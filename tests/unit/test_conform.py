@@ -601,7 +601,7 @@ class TestCliDispatch:
         # subcommands are dispatched from locus.cli before it is imported.
         from locus.cli import _SUBCOMMANDS
 
-        assert set(_SUBCOMMANDS) == {"recall", "lint", "index"}
+        assert {"recall", "lint", "index"} <= set(_SUBCOMMANDS)
         for module_name, function_name in _SUBCOMMANDS.values():
             module = __import__(module_name, fromlist=[function_name])
             assert callable(getattr(module, function_name))

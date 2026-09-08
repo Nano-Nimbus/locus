@@ -45,8 +45,8 @@ See the [wiki](https://github.com/Nano-Nimbus/locus/wiki) for full documentation
 pip install locus-mcp
 # or: uvx locus-mcp --palace ~/.locus  (no install needed)
 
-# Create a palace from the example template
-cp -r example-palace ~/.locus
+# Create a palace from the packaged example
+locus init ~/.locus
 # Edit ~/.locus/INDEX.md to describe your palace
 
 # Run the MCP server
@@ -358,18 +358,19 @@ The security system (`--security`) gives every palace file an Ed25519 signature 
 
 ```sh
 # One-time setup
-cp templates/locus-security.yaml ~/.locus/locus-security.yaml
-locus-security init-keys --palace ~/.locus
-locus-security sign-all --palace ~/.locus
+locus-security init-config --palace ~/.locus   # writes locus-security.yaml
+locus-security init-keys   --palace ~/.locus
+locus-security sign-all    --palace ~/.locus
 
 # Run with security enabled
 locus-mcp --palace ~/.locus --security
 locus --palace ~/.locus --security --task "..."
 ```
 
-The `locus-security` CLI has four subcommands: `init-keys`, `sign-all`, `verify-all`
-(exit 1 if any file fails verification, or if the palace holds no signable files at all),
-and `rotate-keys`. `sign-all` names and skips any file it cannot read as UTF-8 rather than
+The `locus-security` CLI has five subcommands: `init-config` (writes the annotated
+`locus-security.yaml` from the copy that ships inside the package), `init-keys`,
+`sign-all`, `verify-all` (exit 1 if any file fails verification, or if the palace
+holds no signable files at all), and `rotate-keys`. `sign-all` names and skips any file it cannot read as UTF-8 rather than
 aborting the run, and exits 1 if it skipped anything. Neither command follows a symlink
 whose target resolves outside the palace: those are named and skipped by `sign-all`, and
 reported as failures by `verify-all`.
@@ -398,7 +399,7 @@ See [`docs/benchmarks.md`](docs/benchmarks.md) for charts and full methodology.
 ## Structure
 
 ```
-example-palace/   Copy-paste palace template to get started
+example-palace/   Palace template; `locus init` writes it into a new palace
 spec/             Palace convention definitions:
   index-format.md       INDEX.md rules and routing
   room-conventions.md   Room structure and naming
@@ -411,7 +412,8 @@ spec/             Palace convention definitions:
   audit-algorithm.md    Palace health scoring
   health-report-format.md  Audit report structure
   inferred-feedback.md  Disagreement signal classification
-templates/        Copy-paste templates for INDEX.md, rooms, session logs, locus-security.yaml
+templates/        Templates for INDEX.md, rooms, session logs, locus-security.yaml
+                  (`locus init --show list`; both trees ship inside the wheel)
 skills/
   claude/         SKILL.md files for Claude Code + Agent SDK
     locus/              Palace navigation and memory management
@@ -437,6 +439,7 @@ locus/
   conform/        locus lint and locus index: OKF conformance, index generation
   recall/         locus recall: FTS5 index shared with memory_search
   security/       Ed25519 security system — keys, signing, taint, nonce, middleware
+  scaffold.py     locus init: packaged templates and palace scaffolding
   utils.py        Shared utilities (slug_from_path)
 ```
 

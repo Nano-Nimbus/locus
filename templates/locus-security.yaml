@@ -1,12 +1,13 @@
 # Locus Security Configuration
-# Copy to your palace root as locus-security.yaml and adjust to your threat model.
+# Lives at your palace root as locus-security.yaml. Adjust to your threat model.
 #
 # Quick start:
-#   1. Copy this file to <palace-root>/locus-security.yaml
-#   2. Run: locus-security init-keys --palace <palace-root>
-#   3. Run agents with: locus --palace <path> --security --task "..."
+#   1. locus-security init-config --palace <palace-root>   (writes this file)
+#   2. locus-security init-keys   --palace <palace-root>
+#   3. locus-security sign-all    --palace <palace-root>
+#   4. Run agents with: locus --palace <palace-root> --security --task "..."
 #
-# See: skills/claude/locus-security/SKILL.md for agent-facing security conventions.
+# See: https://github.com/Nano-Nimbus/locus/blob/main/docs/security.md
 
 version: "1"
 

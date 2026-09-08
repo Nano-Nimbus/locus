@@ -2,10 +2,11 @@
 
 ``locus recall ...`` is dispatched here before anything heavy is imported:
 a hook that runs it on every prompt should pay for ``sqlite3`` and the
-recall package, not for the Agent SDK.  ``locus lint`` and ``locus index``
-are dispatched the same way, so a CI job that only checks conformance never
-installs or imports the SDK either.  Every other invocation is forwarded
-unchanged to the agent CLI (``locus --palace ... --task ...``).
+recall package, not for the Agent SDK.  ``locus lint``, ``locus index`` and
+``locus init`` are dispatched the same way, so a CI job that only checks
+conformance, or a first-run scaffold, never installs or imports the SDK
+either.  Every other invocation is forwarded unchanged to the agent CLI
+(``locus --palace ... --task ...``).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ _SUBCOMMANDS = {
     "recall": ("locus.recall.main", "main"),
     "lint": ("locus.conform.main", "lint_main"),
     "index": ("locus.conform.main", "index_main"),
+    "init": ("locus.scaffold", "init_main"),
 }
 
 
