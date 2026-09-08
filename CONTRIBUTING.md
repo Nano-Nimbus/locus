@@ -62,7 +62,7 @@ uv sync --extra dev
 Verify the environment:
 
 ```sh
-# Unit tests — all 256 must pass
+# Unit tests: all 465 must pass
 uv run pytest tests/unit/ -v
 
 # MCP integration benchmark — smoke-test the live server

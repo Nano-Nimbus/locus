@@ -267,6 +267,91 @@ same way. Full rules in [`spec/recall.md`](spec/recall.md).
 
 ---
 
+## Lint and index
+
+`locus lint` checks markdown roots for [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format)
+v0.2 conformance and the Locus palace conventions. `locus index` generates the
+index files those conventions define. Both read the same frontmatter `recall`
+indexes, and neither imports the Agent SDK, so a CI job that only checks
+conformance does not install it.
+
+```sh
+locus lint  --root docs --check          # CI gate: exit 1 on any error
+locus lint  --root docs --fix            # add inferable fields, rewrite nothing
+locus index --root docs --check          # exit 1 when a generated index drifted
+```
+
+```
+docs/runbooks/valve-chatter.md: error [okf.type-missing] frontmatter has no non-empty type (fix: add type: Runbook)
+docs/log.md: error [okf.log-order] entries run oldest first: 2026-05-09 follows 2026-05-01
+docs/reference/platform.md: warning [locus.size-limit] 214 lines exceeds the 200-line soft limit for a specialty file
+2 error(s), 1 warning(s), 1 fixable
+```
+
+### lint
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--root DIR` | `.locus.toml`, then `LOCUS_PALACE` | Directory to check; repeatable |
+| `--check` | off | Exit non-zero on any error. For CI |
+| `--strict` | off | Treat warnings as errors under `--check` |
+| `--fix` | off | Add inferable fields. Never rewrites an existing key |
+| `--type-map DIR=TYPE` | none | Infer this OKF type under DIR; repeatable |
+| `--archive-glob GLOB` | none | Paths that should carry `status: deprecated`; repeatable |
+| `--json` | off | Print a JSON report instead of text |
+
+Rules split in two. `okf.*` checks what the specification requires: a parseable
+frontmatter block with a non-empty `type` on every non-reserved document, an
+`index.md` with no frontmatter beyond a bundle-root `okf_version`, a `log.md`
+that is date-headed and newest first, and ISO 8601 timestamps. Unknown keys and
+unknown type values are never reported: the spec requires consumers to tolerate
+both. `locus.*` checks the palace conventions: the size limits from
+[`spec/size-limits.md`](spec/size-limits.md) and the room main-file rule from
+[`spec/room-conventions.md`](spec/room-conventions.md).
+
+Errors fail `--check`; warnings are advisory. A palace legitimately carries no
+frontmatter at all, so on a palace root the missing type rules are warnings
+rather than a CI failure on a layout the palace spec itself describes.
+
+`--fix` adds three fields and only three: `type` from `--type-map` or
+`[lint.types]`, `generated.at` from the file's first git commit, and
+`status: deprecated` for archive paths. It never rewrites or deletes a key, it
+never invents a `generated` block (nothing in a file says who produced it), and
+running it twice produces identical bytes.
+
+### index
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--root DIR` | `.locus.toml`, then `LOCUS_PALACE` | Directory to index; repeatable |
+| `--check` | off | Write nothing; exit non-zero on drift. For CI |
+| `--kind` | `auto` | Force `okf`, `palace`, or `memory` classification |
+| `--json` | off | Print a JSON report instead of text |
+
+What gets generated depends on the root: an OKF bundle gets an `index.md` per
+directory in section 8 form (`* [Title](path) - description`, with
+`okf_version: "0.2"` frontmatter at the bundle root only), a palace gets the
+50-line routing table `INDEX.md`, and a Claude Code memory directory gets a
+`MEMORY.md` of one `- [Title](file.md) - description` line per topic file.
+Output is deterministic, so `--check` is a byte comparison, and only index
+files are ever written.
+
+Configure both from one `.locus.toml`:
+
+```toml
+[lint]
+roots = ["docs"]
+archive_globs = ["archive/*"]
+
+[lint.types]
+"." = "Reference"
+runbooks = "Runbook"
+```
+
+Full rules in [`spec/lint-and-index.md`](spec/lint-and-index.md).
+
+---
+
 ## Security
 
 The security system (`--security`) gives every palace file an Ed25519 signature and every agent session a unique cryptographic nonce. Tool outputs are tagged `[TRUSTED]`, `[DATA]`, or `[CRITICAL-DATA]` before the agent sees them. The agent skill (`locus-security`) teaches agents to extract facts from `[DATA]` content but never follow directives within it.
@@ -321,6 +406,7 @@ spec/             Palace convention definitions:
   write-modes.md        Session logs vs canonical edits
   mcp-server.md         MCP server architecture and safety model
   recall.md             locus recall: roots, index, ranking, trust tier, STALE
+  lint-and-index.md     locus lint and locus index: OKF conformance, generated indexes
   metrics-schema.md     Run metrics JSON schema
   audit-algorithm.md    Palace health scoring
   health-report-format.md  Audit report structure
@@ -348,6 +434,7 @@ locus/
   audit/          Palace health auditor (locus-audit CLI)
   feedback/       Inferred feedback classifier
   mcp/            MCP server (locus-mcp CLI) — palace.py, server.py, main.py
+  conform/        locus lint and locus index: OKF conformance, index generation
   recall/         locus recall: FTS5 index shared with memory_search
   security/       Ed25519 security system — keys, signing, taint, nonce, middleware
   utils.py        Shared utilities (slug_from_path)
