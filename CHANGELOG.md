@@ -1,5 +1,117 @@
 # Changelog
 
+## Unreleased
+
+### Palace bootstrap for explicit roots, and the missing `locus-security` CLI
+
+Two bugs found while wiring Locus into a container deployment.
+
+**Fixes:**
+
+- `fix(mcp)`: `find_palace()` now bootstraps a skeleton `INDEX.md` (plus `global/` and
+  `projects/` when the directory is empty) for palaces given via `--palace`, `LOCUS_PALACE`,
+  or `./.locus`. Only the `~/.locus` fallback was bootstrapped before, so every container
+  deployment, which always passes `--palace`, started without an index and `memory_list`
+  answered "No INDEX.md found" until someone wrote one by hand (#52). Existing files are never
+  modified, a read-only root is logged and skipped, and the Claude Code auto-memory bridge
+  directory is deliberately left untouched.
+- `fix(security)`: the `locus-security init-keys` / `sign-all` / `rotate-keys` commands
+  documented in the README, `docs/security.md`, `docs/onboarding.md`,
+  `templates/locus-security.yaml`, and the `load_keystore()` error message had no
+  console-script entry point. Added `locus/security/main.py` and the `locus-security`
+  script with `init-keys`, `sign-all`, `verify-all`, and `rotate-keys` (#53).
+
+**Security review fixes** (all on the newly reachable key path):
+
+- `fix(security)`: `rotate-keys` gave the new key the same default id as the key it was
+  retiring (`locus-YYYY-MM-DD` for both), so a single rotation on the day the key was
+  created silently broke every existing signature: the retired archive is named after the
+  key id, so it was overwritten, and `KeyStore.find_by_id` resolves a shared id to the
+  *active* key, so verification used the wrong public key. New ids are now suffixed
+  (`locus-2026-03-01-2`) until unique within the store, and `init-keys` rejects an
+  explicit `--key-id` that another key already uses.
+- `fix(security)`: a missing, wrong, or unexpected `LOCUS_SIGNING_PASSPHRASE` raised an
+  uncaught `TypeError` with a traceback. All three cases now report which one it is and
+  exit 1, and no message ever echoes the passphrase.
+- `fix(security)`: `sign-all` aborted on the first file that was not valid UTF-8, without
+  naming it, leaving every later file unsigned. Each bad file is now named on stderr and
+  skipped, the rest are still signed, and the command exits 1 so a partial run is not
+  mistaken for a clean one.
+- `fix(security)`: `--expires-days -5` fell through the `> 0` guard and meant "never
+  expires". Negative values are now a usage error; only 0 means never.
+- `fix(security)`: `sign-all` signed symlinked files whose target resolves outside the
+  palace, stamping palace-trusted provenance onto content the palace does not own.
+  Escaping symlinks are now named and skipped, and `verify-all` fails on them. Symlinks
+  pointing inside the palace are unaffected.
+- `fix(security)`: the key store and its `retired/` directory are created 0700 and every
+  file in them 0600, set explicitly rather than inherited from the umask. Writes fsync
+  before the rename and clean up the temp file if anything fails.
+- `fix(security)`: `rotate-keys` reads the store back after writing and fails loudly if
+  the new active key does not match what it just generated, instead of surfacing a
+  half-written store later as unexplained signing failures. The retired public key is
+  still archived before `active.pem` is overwritten.
+- `fix(security)`: `verify-all` exited 0 on a palace with no signable files, so a gate
+  pointed at the wrong root passed vacuously. It now reports that and exits 1.
+- `feat(security)`: `rotate-keys` accepts `--expires-days`, matching `init-keys`.
+- `fix(security)`: **the signature did not bind a file to its path.** `verify_file()`
+  rebuilt the signed payload from the sidecar's own `rel_path`, so the signature only
+  attested "some file had this hash". Copying a signed low-value note plus its sidecar
+  over `INDEX.md` verified clean and exited 0, with no key material needed. Because
+  `memory_read` uses the same call to decide `[TRUSTED]`, that promoted attacker-chosen
+  content into the tier the agent reads first. The payload is now rebuilt from where the
+  file actually is and a path mismatch fails verification. `palace_slug` is still taken
+  from the sidecar so moving or remounting a palace does not invalidate every signature.
+- `fix(security)`: `init-keys --force` overwrote the active key without archiving its
+  public half, so every signature made with it failed with "key not found" and the key
+  needed to check them was gone from disk. `--force` now retires the outgoing key exactly
+  as `rotate-keys` does.
+- `fix(security)`: `--key-id` was used verbatim as the retired archive filename, so
+  `--key-id ../../../escaped` wrote key files outside the store and hid the id from the
+  uniqueness check. Key ids are now validated against `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
+- `fix(security)`: `load_keystore()` never checked that `active.pub` belongs to
+  `active.pem`. The two are separate renames, so a crash mid-save left a store that signed
+  happily and produced signatures nothing could verify. The public key is now derived from
+  the loaded private key and compared.
+- `fix(security)`: key expiry was never enforced anywhere. `KeyPair.is_expired` had no
+  call sites, so an expired key kept signing and its signatures kept verifying, which is
+  worse than no expiry because the CLI help implies the flag gates something. `sign-all`
+  now refuses an expired key.
+- `fix(security)`: a sidecar that parsed to a scalar or a list raised `AttributeError` and
+  killed the whole `verify-all` run, leaving every later file unchecked. A non-UTF-8 body
+  did the same via `UnicodeDecodeError`, which is a `ValueError` and so slipped past the
+  `except OSError` meant to catch it. Both now fail one file and the run continues.
+- `fix(security)`: `except (InvalidSignature, Exception)` reported a corrupt public key, a
+  malformed base64 payload, and a genuine forgery identically, with a message that ended
+  in a bare colon because `InvalidSignature` stringifies to nothing. Each case now has its
+  own reason, and that reason is what the server shows the agent.
+- `fix(security)`: `init-keys` checked only `active.pem` for an existing store, so the
+  half-written state a crash leaves behind read as "no keys here" and was silently
+  overwritten. All three files are checked.
+- `fix(security)`: `--expires-days 100000000` overflowed `timedelta` and exited with a
+  traceback; values above 36500 are a usage error.
+- `fix(mcp)`: bootstrap no longer writes `INDEX.md` into a palace that holds signature
+  sidecars. The two features in this PR contradicted each other: an unsigned index turned
+  a clean `verify-all` into a failure, and with `verify_on_read` enabled the server would
+  refuse to serve the file it had just written.
+
+**Tests:** 325 pass, up from 290. 9 bootstrap cases in `test_mcp.py` (empty root, env var,
+`./.locus`, non-empty root, existing index preserved, read-only empty root, read-only
+non-empty root, signed palace, bridge untouched); 46 CLI cases in
+`tests/unit/security/test_cli.py`, including the relocation attack on a signed file, a
+double rotation on one day that checks signatures from all three key generations still
+verify, `--force` keeping old signatures verifiable, a torn keystore, key id traversal,
+expiry enforcement, malformed and unparseable sidecars, the three passphrase failure
+modes, the non-UTF-8 skip on both `sign-all` and `verify-all`, negative and oversized
+`--expires-days`, symlink escape, and key store permissions; `--version` coverage for
+`locus-security`.
+
+Note that three of these are pre-existing bugs in `locus/security/signing.py` and
+`keys.py` rather than in code this PR wrote. They are fixed here because this PR is what
+first makes that path reachable from a command line, and because the path-binding one is
+also reachable through `memory_read` today.
+
+---
+
 ## v0.10.0 — 2026-03-14
 
 Bumps version to include `--version` flag on all CLIs, skill sync tooling,

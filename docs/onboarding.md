@@ -55,6 +55,13 @@ Keep it under 50 lines. This is the only file loaded automatically.
 4. `~/.claude/projects/<slug>/memory/` — Claude Code auto-memory bridge (zero config)
 5. `~/.locus/` global palace (bootstrapped if absent)
 
+Whichever directory steps 1, 2, 3, or 5 resolve to is given a skeleton
+`INDEX.md` when it has none (an empty directory also gets `global/` and
+`projects/`). Existing files are never modified, and a read-only root is
+logged and skipped. Step 4 is the exception: a Claude Code memory directory
+already has `MEMORY.md` as its entry point and is owned by Claude Code, so
+Locus never writes into it during resolution.
+
 ---
 
 ## 3. Starting a session
@@ -210,6 +217,7 @@ cp -r skills/claude/locus-security ~/.claude/skills/locus-security
 | Auto-detect + consolidate | `locus-consolidate` | Invoke with no argument |
 | Enable security | — | `locus --palace ... --security --task ...` |
 | Rotate signing key | — | `locus-security rotate-keys --palace ...` |
+| Verify all signatures | n/a | `locus-security verify-all --palace ...` |
 
 **Spec reference:** `spec/` directory contains the full convention definitions.
 Read `spec/size-limits.md` first if you're unsure about any threshold.

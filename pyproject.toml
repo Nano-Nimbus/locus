@@ -35,6 +35,7 @@ Changelog = "https://github.com/Nano-Nimbus/locus/blob/main/CHANGELOG.md"
 locus = "locus.agent.main:cli"
 locus-audit = "locus.audit.main:cli"
 locus-mcp = "locus.mcp.main:cli"
+locus-security = "locus.security.main:cli"
 
 [build-system]
 requires = ["hatchling"]
