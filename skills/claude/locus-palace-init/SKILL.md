@@ -132,7 +132,33 @@ STATUS: imported — review and reformat before treating as canonical
 
 ### 5c — Write INDEX.md
 
-Build the index by iterating groups in this order: `infra`, `tools`, `data`, `docs`, `projects`.
+Once every room file is on disk, generate the index rather than hand-writing it:
+
+```sh
+locus index --root <palace> --kind palace
+```
+
+`locus index` builds the routing table from each room's frontmatter and enforces
+the 50-line budget. `--kind palace` is only needed while the palace is still
+half-built and auto-detection could read it as something else; once `INDEX.md`
+exists, plain `locus index --root <palace>` is enough. Re-running it is safe:
+output is deterministic, existing consolidation prose is preserved, and only
+index files are ever written.
+
+Follow it with a conformance pass over the imported rooms:
+
+```sh
+locus lint --root <palace> --fix    # add inferable type/generated.at, rewrite nothing
+locus lint --root <palace>          # report what --fix could not infer
+```
+
+Imported rooms carry no frontmatter, and frontmatter is what `locus recall` ranks
+on, so a room with no `title`/`description`/`type` is close to unretrievable.
+`--fix` supplies `type` where `--type-map DIR=TYPE` or `[lint.types]` says what it
+should be; the descriptions are yours to write in the review pass.
+
+If `locus index` is unavailable, build the index by hand, iterating groups in this
+order: `infra`, `tools`, `data`, `docs`, `projects`.
 
 Use the template below, omitting any section whose group has no rooms:
 
@@ -179,9 +205,14 @@ locus-palace-init complete:
   Groups: infra=N  tools=N  data=N  docs=N  projects=N
 
 Next steps:
-  1. Review each room file — imported content is verbatim, not canonical.
+  1. Review each room file. Imported content is verbatim, not canonical.
   2. Reformat to palace conventions (remove the SOURCE/IMPORTED comment block).
-  3. Run /locus-consolidate on busy rooms once you start using the palace.
+  3. Give each room frontmatter: title, description, type. Recall ranks on these.
+  4. Record the palace roots once so recall and lint need no flags:
+       [recall]
+       roots = ["<palace>"]
+     in a .locus.toml at the project root or any parent, or export LOCUS_PALACE.
+  5. Run /locus-consolidate on busy rooms once you start using the palace.
 ```
 
 If `--dry-run` was passed, prefix every write action with `[dry-run]` and skip
@@ -196,6 +227,9 @@ all file I/O.
   stale facts. Always review imported rooms before relying on them.
 - Run `locus-consolidate` on any room immediately if it has `sessions/` logs
   that were also imported.
+- `locus recall --root <palace> "<a fact you know is in there>"` is the fastest
+  smoke test that the import produced something retrievable. No hits usually
+  means missing frontmatter, not a broken index.
 - The `--source` and `--palace` defaults assume the standard Claude Code
   auto-memory layout. Adjust if your setup differs.
 - This skill is intentionally write-safe by default: it skips existing rooms

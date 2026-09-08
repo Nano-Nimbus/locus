@@ -125,13 +125,18 @@ The `locus/security/` module has extra-strict rules:
 
 ## SKILL.md files
 
-- SKILL.md files in `skills/claude/`, `skills/codex/`, and `skills/gemini/` must
-  remain agent-agnostic in their instructions (no Claude-specific APIs in codex/gemini
-  variants, and vice versa).
-- Do not rely on `allowed-tools` frontmatter for security — the Agent SDK ignores it.
-  Tool access is controlled by the host `allowedTools` config.
-- When adding a new skill to `skills/claude/`, create matching variants in
-  `skills/codex/` and `skills/gemini/` in the same PR.
+- `skills/claude/` is the only maintained skill set. Do not add per-runtime
+  variants; another runtime adapts these files rather than getting a vendored copy.
+- Every SKILL.md needs `name` and `description` frontmatter. The description is what
+  decides whether the skill is loaded, so it must say when to use the skill, not just
+  what it is.
+- A skill may only name a command the package actually ships (`locus`, `locus recall`,
+  `locus lint`, `locus index`, `locus-audit`, `locus-mcp`, `locus-security`) and may
+  not tell an agent to read a repo-relative path such as `templates/` or `spec/`.
+  Those are absent after `pip install locus-mcp`. Inline the content or link the
+  canonical URL. Flag any PR that reintroduces one.
+- Do not rely on `allowed-tools` frontmatter for security. The Agent SDK ignores it,
+  and tool access is controlled by the host `allowedTools` config.
 - Install all skills with `make install-skills` from the repo root.
 
 ---
@@ -143,8 +148,8 @@ Every PR that merges to `main` must include:
 - A `CHANGELOG.md` entry using the format in `CONTRIBUTING.md` section 9.
 - `README.md` updates if new CLIs, flags, or skills are added.
 - Wiki updates if the change affects installation, CLI options, or configuration.
-- Cross-agent skill updates (`skills/codex/`, `skills/gemini/`) if a Claude skill
-  is added or changed.
+- `skills/claude/` updates when a CLI flag, an index shape, or a palace convention
+  a skill describes has changed.
 
 Flag any PR that modifies user-facing behaviour without updating the docs.
 

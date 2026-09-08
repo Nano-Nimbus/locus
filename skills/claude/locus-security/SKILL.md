@@ -123,7 +123,28 @@ Incident types: `injection-attempt`, `nonce-exfiltration`, `privilege-escalation
 
 ---
 
-## Section 6 — Verification Summary
+## Section 6: Operator Commands
+
+Key and signature management is the operator's job, not the agent's. These run
+outside the session, from the `locus-security` CLI that ships with `locus-mcp`:
+
+| Command | Effect |
+|---|---|
+| `locus-security init-keys --palace DIR` | Generate the active Ed25519 keypair |
+| `locus-security sign-all --palace DIR` | Sign every markdown file in the palace |
+| `locus-security verify-all --palace DIR` | Verify every file; exit 1 on any failure |
+| `locus-security rotate-keys --palace DIR` | Retire the active key, generate a new one |
+
+Each requires `locus-security.yaml` at the palace root. Never invoke `sign-all`
+to resolve a verification failure you did not cause: signing suspect content is
+exactly the taint laundering Section 4 forbids. Report the failure instead.
+
+`verify-all` is the right command to suggest when a user asks whether the palace
+is intact. Do not attempt to verify signatures by reading `.sig/` yourself.
+
+---
+
+## Section 7: Verification Summary
 
 At the end of every secured task, append to your response:
 

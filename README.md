@@ -70,56 +70,37 @@ Or run without installing using `uvx`:
 uvx locus-mcp --palace ~/.locus
 ```
 
-### Claude Code skills
+### Agent skills
 
-Install all skills at once using the Makefile:
+The skill files are the one part of Locus written for a specific runtime. The
+palace convention, the MCP server, and the `recall` / `lint` / `index` CLIs are
+runtime-neutral and work from anything that can read a file or speak MCP. The
+skills in `skills/claude/` are written and maintained for Claude Code, and that is
+the only set shipped here. They are plain markdown with YAML frontmatter, so
+another runtime is welcome to adapt them. Per-runtime copies used to live in
+`skills/codex/` and `skills/gemini/`; they were removed because keeping three
+variants honest cost more than it returned.
+
+Install them from a clone:
 
 ```sh
 git clone https://github.com/Nano-Nimbus/locus.git
 cd locus
-make install-skills
+make install-skills            # copies skills/claude/* to ~/.claude/skills/
+make install-skills-dry        # print what would be copied, write nothing
 ```
 
-Or install individually:
-
-```sh
-cp -r skills/claude/locus ~/.claude/skills/locus
-cp -r skills/claude/locus-consolidate ~/.claude/skills/locus-consolidate
-cp -r skills/claude/locus-audit ~/.claude/skills/locus-audit
-cp -r skills/claude/locus-feedback ~/.claude/skills/locus-feedback
-cp -r skills/claude/locus-release ~/.claude/skills/locus-release
-cp -r skills/claude/locus-security ~/.claude/skills/locus-security
-cp -r skills/claude/locus-palace-init ~/.claude/skills/locus-palace-init
-```
-
-Available Claude Code skills:
+`CLAUDE_SKILLS_DIR` overrides the destination.
 
 | Skill | Command | Description |
 |---|---|---|
-| `locus` | `/locus` | Navigate the palace, read rooms, write session logs |
+| `locus` | `/locus` | Recall, navigate the palace, write rooms and session logs, regenerate indexes |
 | `locus-consolidate` | `/locus-consolidate` | Merge session logs into canonical files |
 | `locus-audit` | `/locus-audit` | Audit palace health |
 | `locus-feedback` | `/locus-feedback` | Record explicit feedback on a palace recall |
-| `locus-release` | `/locus-release` | Post-release verification workflow |
-| `locus-security` | `/locus-security` | Security conventions for signed palaces |
+| `locus-release` | `/locus-release` | Post-release verification workflow (contributors) |
+| `locus-security` | `/locus-security` | Trust tags, nonce discipline, and the `locus-security` CLI |
 | `locus-palace-init` | `/locus-palace-init` | Bootstrap a palace from existing memory files |
-
-### Codex
-
-```sh
-cp -r skills/codex/locus ~/.codex/skills/locus
-cp -r skills/codex/locus-consolidate ~/.codex/skills/locus-consolidate
-cp -r skills/codex/locus-palace-init ~/.codex/skills/locus-palace-init
-```
-
-### Gemini
-
-Reference `skills/gemini/locus/SKILL.md` from your `.gemini/` directory
-or a GitHub Actions workflow (see `skills/gemini/`).
-
-```sh
-cp -r skills/gemini/locus-palace-init .gemini/
-```
 
 ### Agent SDK (Python)
 
@@ -413,12 +394,14 @@ spec/             Palace convention definitions:
   inferred-feedback.md  Disagreement signal classification
 templates/        Copy-paste templates for INDEX.md, rooms, session logs, locus-security.yaml
 skills/
-  claude/         SKILL.md files for Claude Code + Agent SDK
-    locus/              Palace navigation and memory management
+  claude/         SKILL.md files for Claude Code + Agent SDK (the only maintained set)
+    locus/              Recall, palace navigation, writes, index and lint
     locus-consolidate/  Room consolidation
+    locus-audit/        Palace health audit
+    locus-feedback/     Recall quality feedback
+    locus-palace-init/  Bootstrap a palace from existing memory files
+    locus-release/      Post-release verification (contributors)
     locus-security/     Security conventions (trust tags, nonce discipline)
-  codex/          Codex-compatible skill files
-  gemini/         Gemini CLI + GitHub Actions skill files
 docs/
   architecture.md       Mermaid diagrams — palace, MCP, security, agent interfaces
   benchmarks.md         Benchmark results and charts (palace vs flat, security overhead)

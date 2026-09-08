@@ -116,8 +116,26 @@ accurately reflects the room's current contents.
 
 If the description has drifted:
 1. Read `INDEX.md`.
-2. Update the room's description column — one line, present tense, specific.
+2. Update the room's description column: one line, present tense, specific.
 3. Verify `INDEX.md` remains under 50 lines.
+
+---
+
+## Step 6b: Verify with the CLI
+
+Consolidation moves content between files, which is exactly what drifts an index
+and breaks a size limit. Confirm both before reporting:
+
+```sh
+locus index --root <palace-root> --check   # exit 1 if any index drifted
+locus lint  --root <palace-root>           # size limits and OKF conformance
+```
+
+`locus index --root <palace-root>` (without `--check`) regenerates the index
+files that drifted, so Step 6 can be delegated to it rather than done by hand.
+It writes index files only, never room content. A `locus.size-limit` error after
+consolidation means the merge pushed a canonical file past its hard limit: go
+back to Step 4 and extract.
 
 ---
 
@@ -134,6 +152,8 @@ Locus Consolidate: <room-path>
   Conflicts flagged:       <N or none>
   Room main file:          <final line count> lines
   INDEX.md updated:        yes/no
+  locus index --check:     clean/drifted
+  locus lint:              <N> error(s), <N> warning(s)
 ```
 
 If multiple rooms were processed (auto-detect mode), emit one summary block per room.
@@ -142,6 +162,8 @@ If multiple rooms were processed (auto-detect mode), emit one summary block per 
 
 ## Installation
 
+From a clone of the locus source repository:
+
 ```sh
-cp -r skills/claude/locus-consolidate ~/.claude/skills/locus-consolidate
+make install-skills          # installs every skill in skills/claude/
 ```

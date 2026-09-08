@@ -1,6 +1,8 @@
 .PHONY: install-skills install-skills-dry install test lint
 
-# Sync all locus skills from skills/claude/ to ~/.claude/skills/
+# Sync the Claude skills from skills/claude/ to ~/.claude/skills/.
+# skills/claude/ is the only maintained skill set; CLAUDE_SKILLS_DIR overrides
+# the destination.
 install-skills:
 	@bash scripts/install-skills.sh
 
