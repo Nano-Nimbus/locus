@@ -20,7 +20,8 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from locus.mcp.palace import assert_writable, safe_resolve
-from locus.recall import RecallError, fts5_available, recall as _recall
+from locus.recall import RecallError, fts5_available
+from locus.recall import recall as _recall
 
 log = logging.getLogger("locus.mcp.server")
 
@@ -427,7 +428,7 @@ class _SecurityVerifier:
     """Thin wrapper around the security layer for use in the MCP server."""
 
     def __init__(self, palace_root: Path) -> None:
-        from locus.security.config import load_security_config, CriticalityLevel
+        from locus.security.config import CriticalityLevel, load_security_config
         from locus.security.keys import load_keystore
 
         config = load_security_config(palace_root)

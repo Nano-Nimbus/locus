@@ -29,9 +29,9 @@ import re
 import sqlite3
 import unicodedata
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from .config import RecallError, dedupe_roots, default_index_path
 from .frontmatter import split_frontmatter
@@ -40,6 +40,10 @@ log = logging.getLogger("locus.recall.index")
 
 SCHEMA_VERSION = "1"
 MAX_FILE_BYTES = 1_000_000
+# How long to wait for another process's write lock before giving up and
+# searching the index as it stands. Generous, because losing the race is
+# normal: a prompt hook and the MCP server share one index by design.
+LOCK_TIMEOUT_SECONDS = 30.0
 
 # Sub-directories never indexed: tooling, VCS, sidecars, and pipeline output.
 _SKIP_DIR_NAMES = {"node_modules", "__pycache__", "_metrics", ".venv"}
@@ -152,7 +156,7 @@ def extract_document(root: Path, file: Path, text: str, mtime: float) -> Documen
     modified = (
         _text(fm.get("modified"))
         or _text(generated.get("at"))
-        or datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(timespec="seconds")
+        or datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="seconds")
     )
     return Document(
         root=str(root),
@@ -293,8 +297,8 @@ def is_stale(status: str, stale_after: str, now: datetime | None = None) -> bool
     except ValueError:
         return False
     if deadline.tzinfo is None:
-        deadline = deadline.replace(tzinfo=timezone.utc)
-    return deadline <= (now or datetime.now(timezone.utc))
+        deadline = deadline.replace(tzinfo=UTC)
+    return deadline <= (now or datetime.now(UTC))
 
 
 def _normalize_query(query: str) -> str:
@@ -354,6 +358,9 @@ class RecallIndex:
         # Nested roots would index the same file under two keys and return
         # it twice; callers that skip resolve_roots need the same guard.
         self.roots = dedupe_roots(list(roots))
+        # Only the derived cache path is ours to throw away. An --index the
+        # user named is their file, even when it turns out to be unusable.
+        self.index_is_derived = index_path is None
         if index_path is None:
             self.index_path = default_index_path(self.roots)
         else:
@@ -374,7 +381,7 @@ class RecallIndex:
         self._con = self._connect()
         self._ensure_schema()
 
-    def __enter__(self) -> RecallIndex:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -386,32 +393,43 @@ class RecallIndex:
     # -- setup ---------------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
+        """Open the index, degrading rather than failing when it cannot be used."""
         try:
             return self._open(self.index_path)
-        except sqlite3.DatabaseError as exc:
+        except sqlite3.DatabaseError as db_exc:
             # "file is not a database" arrives as DatabaseError, the parent of
-            # OperationalError, so it used to escape entirely: every later run
-            # crashed the same way and --refresh could not help, because the
-            # failure is here, before any refresh logic. The index is derived
-            # data, so the right move is to throw the bad file away once.
-            log.warning("index at %s is unusable (%s); rebuilding it", self.index_path, exc)
-            try:
-                self.index_path.unlink(missing_ok=True)
-                return self._open(self.index_path)
-            except (OSError, sqlite3.DatabaseError) as retry_exc:
-                exc = retry_exc
-        except OSError as exc_os:
-            exc = exc_os
+            # OperationalError. The failure is here, before any refresh logic,
+            # so --refresh cannot clear it and a prompt hook fails on every
+            # single prompt with no hint as to why.
+            failure: Exception = db_exc
+            if self.index_is_derived:
+                # The cache file is disposable derived data, named after a hash
+                # the user never sees. Throw it away and rebuild it once.
+                log.warning("index at %s is unusable (%s); rebuilding it", self.index_path, db_exc)
+                try:
+                    self.index_path.unlink(missing_ok=True)
+                    return self._open(self.index_path)
+                except (OSError, sqlite3.DatabaseError) as retry_exc:
+                    failure = retry_exc
+            else:
+                # An --index the user named is their file, not ours to delete.
+                log.warning(
+                    "index at %s was given with --index and is unusable; leaving it "
+                    "untouched. Delete it or point --index elsewhere.",
+                    self.index_path,
+                )
+        except OSError as os_exc:
+            failure = os_exc
         # A read-only home or cache dir must not break recall either; the
         # index is derived data, so rebuilding it in memory each time is fine.
-        log.warning("cannot open %s (%s); using an in-memory index", self.index_path, exc)
+        log.warning("cannot use %s (%s); using an in-memory index", self.index_path, failure)
         self.in_memory = True
         return sqlite3.connect(":memory:")
 
     @staticmethod
     def _open(path: Path) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(path, timeout=30.0)
+        con = sqlite3.connect(path, timeout=LOCK_TIMEOUT_SECONDS)
         con.execute("PRAGMA journal_mode=WAL")
         return con
 
@@ -594,8 +612,10 @@ class RecallIndex:
 
         try:
             rows = self._con.execute("\n".join(sql), params).fetchall()
-        except sqlite3.DatabaseError as exc:
-            # Returning [] here made a damaged docs_fts table, or a lock held
+        except sqlite3.Error as exc:
+            # sqlite3.Error, not DatabaseError: an InterfaceError from a
+            # connection torn down underneath us is just as much a failed
+            # query. Returning [] here made a damaged docs_fts table, or a lock held
             # past the timeout, indistinguishable from an honest zero-hit
             # search: the hook printed nothing and exited 0. RecallError is
             # what the CLI reports and what makes the MCP server fall back to
@@ -603,7 +623,7 @@ class RecallIndex:
             log.error("FTS5 query failed for %r: %s", match, exc)
             raise RecallError(f"Index query failed: {exc}. Re-run with --refresh.") from exc
 
-        moment = now or datetime.now(timezone.utc)
+        moment = now or datetime.now(UTC)
         terms = query_terms(query)
         hits = [
             Hit(

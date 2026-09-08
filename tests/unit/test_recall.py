@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -121,7 +122,7 @@ class TestExtraction:
         assert trust_tier("human:me") == "human-reviewed"
 
     def test_stale_rules(self) -> None:
-        now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 7, tzinfo=UTC)
         assert is_stale("deprecated", "", now)
         assert is_stale("", "2026-01-01T00:00:00Z", now)
         assert is_stale("", "2026-01-01", now)
@@ -479,7 +480,7 @@ class TestCli:
     def test_json_output(self, capsys: pytest.CaptureFixture) -> None:
         assert main(["--root", str(BUNDLE), "--json", "-k", "2", "valve chatter"]) == 0
         data = json.loads(capsys.readouterr().out)
-        assert [d["path"] for d in data][0] == "irrigation-schedule.md"
+        assert next(d["path"] for d in data) == "irrigation-schedule.md"
         assert len(data) <= 2
 
     def test_budget_flag(self, capsys: pytest.CaptureFixture) -> None:
@@ -531,7 +532,7 @@ class TestCli:
 
     def test_console_script_dispatches_recall(self) -> None:
         # The `locus` script must reach recall without the Agent SDK in the way.
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: PLW1510 - the return code is the assertion
             ["locus", "recall", "--root", str(BUNDLE), "--json", "valve", "chatter"],
             capture_output=True,
             text=True,
@@ -541,7 +542,7 @@ class TestCli:
         assert json.loads(result.stdout)[0]["path"] == "irrigation-schedule.md"
 
     def test_module_entry_point(self) -> None:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: PLW1510 - the return code is the assertion
             ["python", "-m", "locus.recall", "--root", str(BUNDLE), "--json", "valve"],
             capture_output=True,
             text=True,
@@ -587,26 +588,102 @@ class TestReviewRegressions:
         with RecallIndex([root], index_path=index_path) as index:
             assert len(index.search("concurrent marker", k=100)) > 0
 
-    def test_corrupt_index_is_rebuilt_not_a_permanent_crash(
+    def test_corrupt_cache_index_is_rebuilt_not_a_permanent_crash(
         self, tmp_path: Path, cache_home: Path
     ) -> None:
         """"file is not a database" is a DatabaseError, the parent of OperationalError.
 
         It escaped the guard entirely, so every later run crashed identically
         and --refresh could not help: the failure happens in _connect, before
-        any refresh logic, on a file named after a hash the user never sees.
+        any refresh logic, on a file named after a hash the user never sees,
+        so a prompt hook failed on every prompt.
         """
         root = tmp_path / "root"
         _write(root / "note.md", "# Note\n\nrecoverable marker\n")
-        index_path = cache_home / "corrupt.sqlite"
-        with RecallIndex([root], index_path=index_path) as index:
-            index.refresh()
-        index_path.write_bytes(b"definitely not a sqlite database")
+        assert [h.path for h in recall("recoverable marker", roots=[root])] == ["note.md"]
 
-        with RecallIndex([root], index_path=index_path) as index:
+        derived = default_index_path([root.resolve()])
+        assert derived.is_relative_to(cache_home)
+        derived.write_bytes(b"definitely not a sqlite database")
+
+        # The derived cache file is disposable, so it is thrown away and
+        # rebuilt on disk rather than degrading to memory.
+        with RecallIndex([root]) as index:
             index.refresh()
             assert index.in_memory is False
             assert [h.path for h in index.search("recoverable marker", k=5)] == ["note.md"]
+        assert derived.exists()
+
+    def test_corrupt_explicit_index_is_left_alone(
+        self, tmp_path: Path, cache_home: Path
+    ) -> None:
+        """An --index the user named is their file, not ours to delete.
+
+        It still must not crash every run, so recall degrades to an in-memory
+        index and leaves the file exactly as it found it.
+        """
+        root = tmp_path / "root"
+        _write(root / "note.md", "# Note\n\nrecoverable marker\n")
+        index_path = cache_home / "mine.sqlite"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        junk = b"definitely not a sqlite database"
+        index_path.write_bytes(junk)
+
+        with RecallIndex([root], index_path=index_path) as index:
+            index.refresh()
+            assert index.in_memory is True
+            assert [h.path for h in index.search("recoverable marker", k=5)] == ["note.md"]
+        assert index_path.read_bytes() == junk
+
+    def test_locked_index_still_searches_what_is_there(
+        self,
+        tmp_path: Path,
+        cache_home: Path,
+        capsys: pytest.CaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A refresh that cannot get the write lock must not fail the whole call.
+
+        Two processes share one index by design, so one can lose the race and
+        time out. Slightly stale hits beat a traceback and no hits at all.
+        """
+        # Real waits are 30s; no test should sit through one.
+        monkeypatch.setattr("locus.recall.index.LOCK_TIMEOUT_SECONDS", 0.2)
+        root = tmp_path / "root"
+        _write(root / "note.md", "# Note\n\nlockable marker\n")
+        index_path = cache_home / "locked.sqlite"
+        assert [h.path for h in recall("lockable marker", roots=[root], index_path=index_path)] == [
+            "note.md"
+        ]
+
+        # Hold the write lock from a second connection, as a concurrent
+        # refresh in another process would.
+        holder = sqlite3.connect(index_path, timeout=0.1)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            _write(root / "later.md", "# Later\n\nlockable marker too\n")
+            hits = recall("lockable marker", roots=[root], index_path=index_path, k=5)
+        finally:
+            holder.rollback()
+            holder.close()
+
+        # The already-indexed document is still found; the one added while the
+        # lock was held is simply not indexed yet.
+        assert [h.path for h in hits] == ["note.md"]
+        assert "index busy" in capsys.readouterr().err
+
+    def test_search_reports_every_sqlite_error_class(
+        self, tmp_path: Path, cache_home: Path
+    ) -> None:
+        """search() caught DatabaseError; an InterfaceError still looked like zero hits."""
+        root = tmp_path / "root"
+        _write(root / "note.md", "# Note\n\ninterface marker\n")
+        index = RecallIndex([root], index_path=cache_home / "closed.sqlite")
+        index.refresh()
+        assert index.search("interface marker", k=5)
+        index._con.close()
+        with pytest.raises(RecallError, match="Index query failed"):
+            index.search("interface marker", k=5)
 
     def test_index_may_not_live_inside_a_root(self, tmp_path: Path, cache_home: Path) -> None:
         root = tmp_path / "root"
