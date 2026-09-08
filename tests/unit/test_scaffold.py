@@ -13,6 +13,7 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
@@ -120,6 +121,33 @@ class TestCopyExamplePalace:
         assert skipped == []
         assert (palace / "INDEX.md").read_text(encoding="utf-8") != "# Mine\n"
 
+    def test_refuses_a_symlinked_directory_component(self, tmp_path: Path) -> None:
+        """A symlinked `global/` must not route writes outside the palace.
+
+        `Path.mkdir`/`shutil.copyfile` both follow an existing symlinked
+        directory the same way they would a real one, so without a guard
+        this would write into `elsewhere/` instead of `palace/global/`.
+        """
+        palace = tmp_path / "palace"
+        palace.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (palace / "global").symlink_to(elsewhere, target_is_directory=True)
+        with pytest.raises(ScaffoldError, match="symlink"):
+            copy_example_palace(palace)
+        assert list(elsewhere.rglob("*")) == []
+
+    def test_refuses_a_dangling_symlink_at_a_file_target(self, tmp_path: Path) -> None:
+        """`Path.exists()` is False for a dangling symlink, so without a guard
+        a planted one would be written through even without `force`."""
+        palace = tmp_path / "palace"
+        palace.mkdir()
+        outside = tmp_path / "outside.md"
+        (palace / "INDEX.md").symlink_to(outside)
+        with pytest.raises(ScaffoldError, match="symlink"):
+            copy_example_palace(palace)
+        assert not outside.exists()
+
 
 class TestWriteSecurityConfig:
     def test_writes_the_packaged_template(self, tmp_path: Path) -> None:
@@ -136,6 +164,16 @@ class TestWriteSecurityConfig:
         path, written = write_security_config(tmp_path)
         assert written is False
         assert "custom/" in path.read_text(encoding="utf-8")
+
+    def test_refuses_a_dangling_symlink_even_without_force(self, tmp_path: Path) -> None:
+        """A dangling `locus-security.yaml` symlink reads as "does not exist",
+        so without a guard this would write the packaged config through it to
+        wherever the symlink points, silently, with no `--force` given."""
+        outside = tmp_path / "outside.yaml"
+        (tmp_path / SECURITY_CONFIG_NAME).symlink_to(outside)
+        with pytest.raises(ScaffoldError, match="symlink"):
+            write_security_config(tmp_path)
+        assert not outside.exists()
 
 
 class TestInitCommand:
@@ -167,6 +205,22 @@ class TestInitCommand:
         assert init_main(["--show", "list"]) == 0
         printed = capsys.readouterr().out.split()
         assert printed == available_templates()
+
+    def test_show_error_does_not_crash_when_scaffold_root_itself_is_missing(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The error handler names the available templates by calling
+        `available_templates()` again, which raises the same `ScaffoldError`
+        when the failure was `scaffold_root()` itself. That must degrade to a
+        clean exit 1, not an unhandled second traceback."""
+        with mock.patch(
+            "locus.scaffold.scaffold_root",
+            side_effect=ScaffoldError("packaged templates are missing"),
+        ):
+            assert init_main(["--show", "templates/INDEX.md"]) == 1
+        err = capsys.readouterr().err
+        assert "packaged templates are missing" in err
+        assert "Available templates:" in err
 
     def test_show_refuses_to_escape_the_scaffold(self, capsys: pytest.CaptureFixture) -> None:
         """--show is a template printer, not an arbitrary file reader."""

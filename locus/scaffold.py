@@ -116,6 +116,29 @@ def _iter_tree(source: Path) -> Iterator[Path]:
             yield path
 
 
+def _reject_symlink_escape(dest_root: Path, target: Path) -> None:
+    """Refuse to write through a symlink under ``dest_root``.
+
+    ``shutil.copyfile`` follows symlinks, and ``Path.exists()`` reports False
+    for a dangling one. Without this check, a symlink planted at ``target``,
+    or at any directory between ``dest_root`` and ``target``, would let a
+    scaffold write land outside the palace even when the caller did not pass
+    ``force``: a dangling symlink reads as "does not exist yet" and gets
+    copied through, and an existing symlinked directory component gets
+    followed by ``mkdir``/``copyfile`` the same way a real directory would.
+    Writing into a tree that already has content there is exactly what this
+    module promises never to do silently, so a symlink in the way is refused
+    rather than followed.
+    """
+    if target.is_symlink():
+        raise ScaffoldError(f"Refusing to write through a symlink at {target}")
+    probe = dest_root
+    for part in target.relative_to(dest_root).parts[:-1]:
+        probe = probe / part
+        if probe.is_symlink():
+            raise ScaffoldError(f"Refusing to write through a symlink at {probe}")
+
+
 def copy_example_palace(dest: Path, force: bool = False) -> tuple[list[Path], list[Path]]:
     """Copy the packaged example palace into ``dest``.
 
@@ -130,6 +153,7 @@ def copy_example_palace(dest: Path, force: bool = False) -> tuple[list[Path], li
     for path in _iter_tree(source):
         relative = path.relative_to(source)
         target = dest / relative
+        _reject_symlink_escape(dest, target)
         if target.exists() and not force:
             skipped.append(relative)
             continue
@@ -140,7 +164,9 @@ def copy_example_palace(dest: Path, force: bool = False) -> tuple[list[Path], li
     # palace: they are where the next session log goes.
     for path in sorted(source.rglob("*")):
         if path.is_dir():
-            (dest / path.relative_to(source)).mkdir(parents=True, exist_ok=True)
+            target_dir = dest / path.relative_to(source)
+            _reject_symlink_escape(dest, target_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
     return written, skipped
 
 
@@ -152,6 +178,7 @@ def write_security_config(palace: Path, force: bool = False) -> tuple[Path, bool
     security policy is not something a command called ``init`` should do.
     """
     target = palace / SECURITY_CONFIG_NAME
+    _reject_symlink_escape(palace, target)
     if target.exists() and not force:
         return target, False
     shutil.copyfile(security_config_template(), target)
@@ -202,10 +229,15 @@ def init_main(argv: list[str] | None = None) -> int:
             print(template_path(args.show).read_text(encoding="utf-8"), end="")
         except (ScaffoldError, OSError, UnicodeDecodeError) as exc:
             print(f"locus init: {exc}", file=sys.stderr)
-            print(
-                "Available templates: " + ", ".join(available_templates()),
-                file=sys.stderr,
-            )
+            # available_templates() calls scaffold_root() again, which raises
+            # the same ScaffoldError when the packaged data is what is
+            # missing. Fall back instead of letting that escape as a second,
+            # unhandled traceback on top of the message above.
+            try:
+                names = ", ".join(available_templates())
+            except ScaffoldError:
+                names = "none (see the error above)"
+            print(f"Available templates: {names}", file=sys.stderr)
             return 1
         return 0
 
