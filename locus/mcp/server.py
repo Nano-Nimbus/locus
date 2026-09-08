@@ -5,7 +5,8 @@ Tools
 memory_list   List the palace index or a room's files.
 memory_read   Read any file within the palace.
 memory_write  Atomically write a file within the palace (guarded).
-memory_search Full-text search across the palace or a sub-path.
+memory_search Ranked full-text search across the palace or a sub-path.
+memory_batch  Read several palace files in one call.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from locus.mcp.palace import assert_writable, safe_resolve
+from locus.recall import RecallError, fts5_available, recall as _recall
 
 log = logging.getLogger("locus.mcp.server")
 
@@ -185,13 +187,20 @@ def memory_write(path: str, content: str) -> str:
 
 @mcp.tool()
 def memory_search(query: str, path: str = "") -> str:
-    """Full-text search across the palace (or a sub-path).
+    """Ranked full-text search across the palace (or a sub-path).
 
-    Uses ripgrep (``rg``) if available; falls back to Python ``re``.
-    Returns up to 20 matches, each showing the relative file path, line
-    number, and matched line with 1 line of context on each side.
+    Backed by the same SQLite FTS5 index as ``locus recall``: bm25 with the
+    title and description weighted above the body, ties broken by trust tier
+    (human-reviewed first) and then by ``modified`` (newest first).  The
+    query is treated as a bag of words.  Returns up to 20 hits, each with the
+    relative path, title, trust tier, a ``STALE`` flag when ``stale_after``
+    has passed or ``status`` is ``deprecated``, the modified date, and the
+    body line that matches the most query terms.  Session logs and
+    ``type: Journal`` files are included.
 
-    ``path`` narrows the search to a specific room or subdirectory.
+    ``path`` narrows the search to a specific room, subdirectory, or file.
+    Only when this Python's sqlite3 lacks FTS5 does the tool fall back to
+    ripgrep (or Python ``re``), whose matches come back in file order.
     """
     root = _root()
     log.debug("memory_search query=%r path=%r", query, path or "(palace root)")
@@ -200,6 +209,14 @@ def memory_search(query: str, path: str = "") -> str:
     if not search_root.exists():
         log.info("memory_search: search path not found: %s", path)
         return f"Search path not found: {path}"
+
+    if fts5_available():
+        try:
+            result = _search_index(query, search_root, root)
+            log.debug("memory_search: fts5 backend, %d result lines", result.count("\n"))
+            return result
+        except RecallError as exc:
+            log.warning("memory_search: index unavailable (%s); falling back", exc)
 
     try:
         result = _search_rg(query, search_root, root)
@@ -210,6 +227,26 @@ def memory_search(query: str, path: str = "") -> str:
         result = _search_python(query, search_root, root)
         log.debug("memory_search: python backend, %d result lines", result.count("\n"))
         return result
+
+
+def _search_index(query: str, search_root: Path, palace_root: Path) -> str:
+    """FTS5-backed ranked search over the palace, scoped to ``search_root``."""
+    if len(query) > _MAX_QUERY_LEN:
+        return f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN})"
+    scope = search_root.relative_to(palace_root).as_posix() if search_root != palace_root else None
+    hits = _recall(query, [palace_root], k=_MAX_SEARCH_HITS, include_journal=True, scope=scope)
+    if not hits:
+        return f"No matches for '{query}'"
+
+    lines: list[str] = []
+    for number, hit in enumerate(hits, 1):
+        flags = hit.tier + (", STALE" if hit.stale else "")
+        lines.append(f"{number}. {hit.path}  [{flags}]  {hit.title}  (modified {hit.modified[:10]})")
+        if hit.description:
+            lines.append(f"   {hit.description}")
+        if hit.snippet:
+            lines.append(f"   {hit.snippet}")
+    return "\n".join(lines)
 
 
 def _search_rg(query: str, search_root: Path, palace_root: Path) -> str:
@@ -275,6 +312,7 @@ def _search_rg(query: str, search_root: Path, palace_root: Path) -> str:
 _MAX_READ_BYTES = 500_000   # 500 KB — palace files should be tiny
 _MAX_WRITE_BYTES = 500_000  # 500 KB — guards against runaway writes
 _MAX_QUERY_LEN = 200
+_MAX_SEARCH_HITS = 20
 _MAX_BATCH_PATHS = 20
 
 

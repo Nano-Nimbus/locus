@@ -41,9 +41,10 @@ def palace(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def inject_palace(palace: Path) -> None:
-    """Point the module-level server at the test palace."""
+def inject_palace(palace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the module-level server at the test palace and keep the search index in tmp."""
     mcp_server._palace_root = palace
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +399,62 @@ class TestMemorySearch:
     def test_python_query_too_long_returns_error(self, palace: Path) -> None:
         result = mcp_server._search_python("x" * 201, palace, palace)
         assert "Query too long" in result
+
+
+class TestMemorySearchRanked:
+    """memory_search is backed by the locus.recall FTS5 index (#50)."""
+
+    def test_title_match_ranks_first(self, palace: Path) -> None:
+        (palace / "global" / "networking" / "wireguard-setup.md").write_text(
+            "# WireGuard setup\n\nPeer config steps.\n"
+        )
+        result = mcp_server.memory_search("WireGuard")
+        lines = result.splitlines()
+        assert lines[0].startswith("1. global/networking/wireguard-setup.md")
+        assert lines[2].startswith("2. global/networking/networking.md")
+
+    def test_hit_shows_tier_title_and_snippet(self) -> None:
+        result = mcp_server.memory_search("WireGuard")
+        assert "[unverified]" in result
+        assert "Networking" in result
+        assert "WireGuard is a fast VPN." in result
+
+    def test_stale_flag_from_frontmatter(self, palace: Path) -> None:
+        (palace / "global" / "old-vpn.md").write_text(
+            "---\ntitle: Old VPN\nstatus: deprecated\nverified:\n  - by: human:me\n---\n"
+            "# Old VPN\n\nOpenVPN was replaced by WireGuard.\n"
+        )
+        result = mcp_server.memory_search("OpenVPN")
+        assert "global/old-vpn.md  [human-reviewed, STALE]" in result
+
+    def test_journal_files_are_included(self, palace: Path) -> None:
+        (palace / "global" / "journal.md").write_text(
+            "---\ntype: Journal\n---\n# Journal\n\nTried the quantum tunnel today.\n"
+        )
+        assert "global/journal.md" in mcp_server.memory_search("quantum tunnel")
+
+    def test_scoped_to_single_file(self) -> None:
+        result = mcp_server.memory_search("WireGuard", path="global/networking/networking.md")
+        assert "networking.md" in result
+        result = mcp_server.memory_search("WireGuard", path="INDEX.md")
+        assert "No matches" in result
+
+    def test_query_of_only_stopwords_is_no_match(self) -> None:
+        assert "No matches" in mcp_server.memory_search("the and of")
+
+    def test_query_too_long(self) -> None:
+        assert "Query too long" in mcp_server.memory_search("x" * 201)
+
+    def test_write_is_visible_to_next_search(self) -> None:
+        mcp_server.memory_write("global/fresh.md", "# Fresh\n\nA brand new ostrich fact.\n")
+        assert "global/fresh.md" in mcp_server.memory_search("ostrich")
+
+    def test_fallback_when_fts5_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(mcp_server, "fts5_available", lambda: False)
+        result = mcp_server.memory_search("WireGuard")
+        # rg / Python fallback: grep-style ``path:line:text`` lines, not the ranked list.
+        assert "networking.md:" in result
+        assert not result.startswith("1. ")
 
 
 # ---------------------------------------------------------------------------

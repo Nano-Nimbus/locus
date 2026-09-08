@@ -83,6 +83,13 @@ locus/
   agent/          Python Agent SDK — CLI entrypoint, metrics collector
   audit/          Palace health auditor (locus-audit CLI)
   feedback/       Inferred feedback signal classifier
+  cli.py          `locus` console script: dispatches `recall` before importing the SDK
+  recall/         locus recall (FTS5 index shared with memory_search)
+    frontmatter.py  Dependency-free frontmatter parser
+    config.py       Root resolution (--root, .locus.toml, LOCUS_PALACE), cache path
+    index.py        RecallIndex: incremental refresh, bm25 ranking, trust tier, STALE
+    output.py       Text (byte-budgeted) and JSON renderers
+    main.py         CLI (locus recall)
   mcp/            MCP server (locus-mcp CLI)
     palace.py       Path safety guards, palace resolution, auto-memory bridge
     server.py       FastMCP tool handlers (memory_list/read/write/search/batch)
@@ -131,6 +138,7 @@ Palace filesystem  ←  MCP server (locus-mcp)  ←  MCP clients (Claude, Codex,
 | File | Why it matters |
 |---|---|
 | `locus/mcp/palace.py` | Every filesystem operation flows through here. Path safety, write guards, palace resolution. Do not bypass. |
+| `locus/recall/index.py` | Ranking, trust tier, and staleness rules. `memory_search` depends on it; the hook contract (`spec/recall.md`) depends on its output. |
 | `spec/size-limits.md` | The context budget thresholds. Changes here affect every agent using Locus. |
 | `spec/mcp-server.md` | MCP tool contracts. Changes to tool signatures are breaking changes. |
 | `locus/security/middleware.py` | The trust enforcement boundary. Changes here affect the security guarantee. |
@@ -197,6 +205,7 @@ uv run pytest tests/unit/test_mcp.py -v
 | Module | What it covers |
 |---|---|
 | `tests/unit/test_mcp.py` | MCP tools, path safety, write guards, search |
+| `tests/unit/test_recall.py` | Frontmatter parser, FTS5 index, ranking, staleness, config, `locus recall` CLI |
 | `tests/unit/test_metrics.py` | Agent run metrics schema and aggregation |
 | `tests/unit/test_audit.py` | Palace health auditor (scanner, scorer, reporter) |
 | `tests/unit/test_signals.py` | Inferred feedback signal classifier |
@@ -408,6 +417,8 @@ These are load-bearing — do not work around them:
 | `auto_sign_writes` defaults to `False` | Prevents taint laundering by default | `config.py` `SigningConfig` |
 | Security is opt-in (`--security` flag) | Existing palace users are unaffected | `main.py` and `locus/agent/main.py` |
 | `_slug_from_path` lives in `locus/utils.py` | `security/` must not depend on `mcp/` | `locus/utils.py` `slug_from_path()` |
+| Recall index lives in the XDG cache, never inside a root | Derived, disposable data must not pollute a palace or a repo | `locus/recall/config.py` `default_index_path()` |
+| `locus/recall/` and `locus/cli.py` import only the standard library | A per-prompt hook must start in well under a second | `locus/cli.py` dispatches before the SDK import |
 
 ---
 

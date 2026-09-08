@@ -99,7 +99,9 @@ CASES: list[Case] = [
     # -----------------------------------------------------------------------
     Case("search-k3s",          "memory_search", {"query": "K3s"},
          expect_contains="K3s", category="search"),
-    Case("search-no-match",     "memory_search", {"query": "xyzzy_not_a_real_term_12345"},
+    # memory_search is a bag-of-words FTS5 query, so a no-match probe must not
+    # contain real words ("real", "term") that the fixture happens to use.
+    Case("search-no-match",     "memory_search", {"query": "xyzzyplugh"},
          expect_contains="No matches", category="search"),
     Case("search-scoped-room",  "memory_search",
          {"query": "Proxmox", "path": "projects/homelab-iac"},
@@ -155,8 +157,10 @@ CASES: list[Case] = [
          expect_contains="not found", category="edge"),
     Case("list-nonexistent",     "memory_list", {"path": "projects/no-such-room"},
          expect_contains="not found", category="edge"),
-    Case("search-regex-version", "memory_search",
-         {"query": r"v[0-9]+\.[0-9]+\.[0-9]+"},
+    # Regex queries were a ripgrep feature; the FTS5 backend matches the literal
+    # version string as a phrase instead.
+    Case("search-version-literal", "memory_search",
+         {"query": "v2.7.5"},
          expect_contains="v2.7.5", category="edge"),
     Case("search-scoped-file",   "memory_search",
          {"query": "Grafana", "path": "projects/homelab-iac/platform-services.md"},

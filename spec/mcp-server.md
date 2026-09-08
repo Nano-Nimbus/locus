@@ -46,7 +46,7 @@ Five tools cover the full palace lifecycle:
 | `memory_list` | `path?: str` | Markdown or file listing | Omit `path` → returns `INDEX.md` content. Pass a room path → lists files in that room. |
 | `memory_read` | `path: str` | File contents as string | Reads any file within the palace. Path is relative to the palace root. |
 | `memory_write` | `path: str`, `content: str` | Confirmation message | Atomic write. Refuses writes outside palace root or into `_metrics/`. |
-| `memory_search` | `query: str`, `path?: str` | Ranked result list | Full-text search across the palace (or a sub-path). Uses ripgrep if available, falls back to Python `re`. |
+| `memory_search` | `query: str`, `path?: str` | Ranked result list | bm25 over the SQLite FTS5 index shared with `locus recall` (see `spec/recall.md`), scoped to `path`. ripgrep or Python `re` only when the Python build lacks FTS5. |
 | `memory_batch` | `paths: list[str]` | Multi-file contents | Reads up to 20 files in one call. Sections separated by `---`. Errors noted inline; never raises for missing/traversal. |
 
 ### Design rationale
@@ -59,10 +59,40 @@ Five tools cover the full palace lifecycle:
 - **`memory_search` scope defaults to the full palace** — the optional `path`
   argument narrows the search to a specific room or subdirectory, which is
   useful when the client already knows which room to search.
+- **`memory_search` is ranked, not grep**: the query is a bag of words;
+  bm25 weights the title and description above the body, and exact ties go to
+  human-reviewed files, then to the newest `modified`. Each hit carries the
+  trust tier and a `STALE` flag from frontmatter, so a client can weigh an
+  answer without opening the file.
 - **`memory_batch` for research startup** — agents beginning a task often need
   5–10 rooms at once. Batching them into a single MCP call reduces round-trips
   and keeps task startup fast. Errors are returned inline so a partial result
   is always available.
+
+---
+
+## Search
+
+`memory_search` opens the recall index for the palace root
+(`${XDG_CACHE_HOME:-~/.cache}/locus/<hash>.sqlite`, or in memory if that
+location is not writable), refreshes it incrementally, and queries it. The
+`path` argument scopes results to one room, subdirectory, or file. Unlike the
+CLI, `type: Journal` files and session logs are included, since the caller is
+searching deliberately. Up to 20 hits are returned, each as:
+
+```
+1. projects/api/technical-gotchas.md  [human-reviewed]  Technical Gotchas  (modified 2026-05-02)
+   optional description from frontmatter
+   the body line that matches the most query terms
+2. projects/api/old-auth.md  [unverified, STALE]  Old auth flow  (modified 2025-11-20)
+   ...
+```
+
+Paths are palace-relative. A query with no usable terms, or no hits, returns
+`No matches for '<query>'`; queries over 200 characters are rejected. Only when
+this Python's `sqlite3` was built without FTS5 does the tool fall back to
+ripgrep (or Python `re`), whose grep-style `path:line:text` matches come back
+in file order.
 
 ---
 
@@ -169,10 +199,10 @@ requiring external databases or vector stores.
 ## Implementation
 
 - **Package**: `locus/mcp/`
-- **Server**: `locus/mcp/server.py` — `FastMCP` instance, all four tools
+- **Server**: `locus/mcp/server.py` (the `FastMCP` instance and all five tools)
 - **Entry point**: `locus/mcp/main.py` — CLI wrapper (`locus-mcp`)
 - **Framework**: `mcp.server.fastmcp.FastMCP` (stdio transport)
-- **Search backend**: `subprocess` call to `rg` (ripgrep); Python `re` fallback
+- **Search backend**: `locus.recall` SQLite FTS5 index (bm25, ties by trust tier then `modified`); `rg` or Python `re` only without FTS5
 
 ---
 
