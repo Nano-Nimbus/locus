@@ -16,14 +16,15 @@ covers what a coding agent needs to orient fast.
 
 ## Module layout
 
-Seven packages under `locus/`, each with its own `main.py`:
+Seven packages under `locus/`. Six of them have their own `main.py`;
+`locus/feedback/` is the exception, it has no CLI and no `main.py`:
 
 | Module | Purpose |
 |---|---|
 | `locus/agent/` | Agent SDK entrypoint (the `locus` CLI when no subcommand matches), run metrics |
 | `locus/audit/` | Palace health auditor (`locus-audit` CLI): scanner, scorer, report |
 | `locus/conform/` | OKF conformance: `locus lint` and `locus index` (rules, fixer, generators) |
-| `locus/feedback/` | Inferred disagreement-signal classifier, used by the Agent SDK |
+| `locus/feedback/` | Inferred disagreement-signal classifier consumed by the Locus skill layer (see `spec/inferred-feedback.md`); not imported by the Agent SDK runtime, no `main.py` |
 | `locus/mcp/` | MCP server (`locus-mcp` CLI): palace resolution, path safety, tool handlers |
 | `locus/recall/` | `locus recall`: SQLite FTS5 index shared with the `memory_search` MCP tool |
 | `locus/security/` | Ed25519 signing system (`locus-security` CLI): keys, taint, nonce, middleware |
@@ -55,6 +56,10 @@ Equivalent to running `uv sync --extra dev` once, then the two `uv run` commands
 directly. CI runs the test suite on Python 3.11 and 3.12 (`.github/workflows/ci.yml`).
 There is no repo-wide ruff config file, so `make lint` enforces ruff's own defaults,
 not a tuned rule set.
+
+`ruff` is not currently in the `dev` extra in `pyproject.toml`, so on a clean
+checkout `make lint` fails to spawn until that is fixed. Until then, run
+`uvx ruff check locus/ tests/` instead.
 
 ## Conventions easy to get wrong
 
