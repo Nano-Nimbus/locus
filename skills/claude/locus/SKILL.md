@@ -83,13 +83,16 @@ index: `--refresh` rebuilds it.
 Needed when recall found nothing, when you are about to write, or when the task
 names a room directly.
 
-The MCP server and the Agent SDK resolve the palace root in this order:
+The MCP server resolves the palace root in this order:
 
 1. an explicit `--palace DIR` argument
 2. the `LOCUS_PALACE` environment variable
 3. `.locus/` in the current working directory
 4. `~/.claude/projects/<project-slug>/memory/`, the Claude Code auto-memory bridge
 5. `~/.locus/`, the global palace
+
+The Agent SDK CLI (`locus --palace DIR --task "..."`) does not: `--palace` is a
+required argument there, with no environment or filesystem fallback.
 
 Cases 1, 2, 3, and 5 each name a directory that is meant to be a palace, so each is
 bootstrapped when it has no `INDEX.md`: a 50-line `INDEX.md` skeleton is written, and

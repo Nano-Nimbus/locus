@@ -80,9 +80,13 @@ Report the grouping plan (slug → group) before writing anything.
 
 1. Check if `<palace>/INDEX.md` already exists.
 2. If it does and `--overwrite` was NOT passed:
-   - Read the existing `INDEX.md`.
-   - Only add rooms for slugs not already listed.
-   - Preserve existing rows in the index tables.
+   - Read the existing `INDEX.md` to see which slugs already have rooms.
+   - Only create rooms for slugs not already present (Step 5b's own
+     skip-if-exists check does this too).
+   - Do not hand-edit the routing table. Step 5c regenerates it from every
+     room's current frontmatter on each run, old rooms and new ones alike, so
+     a description typed directly into `INDEX.md` would be overwritten by the
+     next `locus index` run anyway. Curate room frontmatter, not the index.
 3. If it does not exist (or `--overwrite`): start fresh from the template below.
 
 ### 5b — Write room files
@@ -142,8 +146,13 @@ locus index --root <palace> --kind palace
 the 50-line budget. `--kind palace` is only needed while the palace is still
 half-built and auto-detection could read it as something else; once `INDEX.md`
 exists, plain `locus index --root <palace>` is enough. Re-running it is safe:
-output is deterministic, existing consolidation prose is preserved, and only
-index files are ever written.
+output is deterministic, the surrounding prose (title, scope line, and the
+trailing comment) is preserved, and only index files are ever written. The
+table rows themselves are not preserved across runs, only regenerated: every
+room's row comes from its frontmatter `description` as it stands right now,
+old rooms included, so a hand-edited table cell does not survive the next run.
+A freshly imported room has no `description` yet (Step 5b writes none), so its
+row prints blank until you add one and re-run.
 
 Follow it with a conformance pass over the imported rooms:
 

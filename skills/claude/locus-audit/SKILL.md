@@ -29,7 +29,7 @@ list of recommended actions and writes reports to `_metrics/`.
 Run `/locus-audit` when:
 - Any room has accumulated 5+ session logs
 - A recent run had unexpectedly high retrieval depth
-- `/locus feedback fail` has been used more than once recently
+- `/locus-feedback fail` has been used more than once recently
 - You haven't run an audit in more than 30 days
 
 The locus skill will suggest running an audit when trigger conditions are met
