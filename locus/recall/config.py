@@ -33,8 +33,14 @@ def resolve_roots(
     explicit: list[str] | None = None,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    sections: tuple[str, ...] = ("recall",),
 ) -> list[Path]:
-    """Return the resolved, de-duplicated root list or raise :class:`RecallError`."""
+    """Return the resolved, de-duplicated root list or raise :class:`RecallError`.
+
+    ``sections`` names the ``.locus.toml`` tables to read ``roots`` from, in
+    order.  ``locus lint`` and ``locus index`` pass ``("lint", "recall")`` so a
+    palace configured once for recall does not have to be configured again.
+    """
     environ = os.environ if env is None else env
     if explicit:
         roots = [Path(r).expanduser() for r in explicit]
@@ -42,7 +48,7 @@ def resolve_roots(
     else:
         config_file = find_config(cwd or Path.cwd())
         if config_file is not None:
-            roots = load_config_roots(config_file)
+            roots = load_config_roots(config_file, sections)
             source = str(config_file)
         elif environ.get("LOCUS_PALACE"):
             roots = [Path(environ["LOCUS_PALACE"]).expanduser()]
@@ -50,7 +56,7 @@ def resolve_roots(
         else:
             raise RecallError(
                 "No roots configured. Pass --root DIR (repeatable), add "
-                f"[recall] roots = [...] to a {CONFIG_FILENAME}, or set LOCUS_PALACE."
+                f"[{sections[0]}] roots = [...] to a {CONFIG_FILENAME}, or set LOCUS_PALACE."
             )
 
     resolved: list[Path] = []
@@ -94,19 +100,34 @@ def find_config(start: Path) -> Path | None:
     return None
 
 
-def load_config_roots(config_file: Path) -> list[Path]:
+def load_config_file(config_file: Path) -> dict:
+    """Parse ``.locus.toml`` or raise :class:`RecallError`."""
     try:
-        data = tomllib.loads(config_file.read_text(encoding="utf-8"))
+        return tomllib.loads(config_file.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise RecallError(f"Cannot read {config_file}: {exc}") from exc
-    recall = data.get("recall")
-    if not isinstance(recall, dict):
-        raise RecallError(f"{config_file} has no [recall] table")
-    roots = recall.get("roots")
-    if not isinstance(roots, list) or not roots or not all(isinstance(r, str) for r in roots):
-        raise RecallError(f"{config_file}: [recall] roots must be a non-empty list of strings")
-    base = config_file.parent
-    return [(base / Path(r).expanduser()) for r in roots]
+
+
+def load_config_roots(config_file: Path, sections: tuple[str, ...] = ("recall",)) -> list[Path]:
+    """Return the ``roots`` list from the first of ``sections`` that declares one.
+
+    A section that exists but declares no ``roots`` is skipped, so a
+    ``[lint]`` table holding only ``types`` still falls through to ``[recall]``.
+    A section that declares an invalid ``roots`` is an error, not a fallthrough.
+    """
+    data = load_config_file(config_file)
+    for section in sections:
+        table = data.get(section)
+        if not isinstance(table, dict) or "roots" not in table:
+            continue
+        roots = table["roots"]
+        if not isinstance(roots, list) or not roots or not all(isinstance(r, str) for r in roots):
+            raise RecallError(
+                f"{config_file}: [{section}] roots must be a non-empty list of strings"
+            )
+        base = config_file.parent
+        return [(base / Path(r).expanduser()) for r in roots]
+    raise RecallError(f"{config_file} has no [{sections[0]}] table declaring roots")
 
 
 def default_index_path(roots: list[Path], env: dict[str, str] | None = None) -> Path:

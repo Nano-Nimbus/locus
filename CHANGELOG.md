@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+### `locus lint` and `locus index`: OKF conformance and generated indexes
+
+Two commands that make an OKF bundle, a palace, or a Claude Code memory
+directory checkable in CI and keep its index files honest (#51).
+
+**`locus lint`** checks [OKF v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format)
+conformance plus the Locus palace conventions:
+
+- OKF rules (`okf.*`): a parseable frontmatter block with a non-empty `type` on
+  every non-reserved document, `index.md` frontmatter limited to a bundle-root
+  `okf_version`, `log.md` date headings that are ISO 8601 and ordered newest
+  first, `generated`/`verified`/`sources` entries that name an actor or a
+  resource, and ISO 8601 timestamps. Unknown keys and unknown type values are
+  never reported: section 4.1 requires consumers to tolerate both. `verified`
+  is accepted as a list or as one bare mapping.
+- Locus rules (`locus.*`): the size limits from `spec/size-limits.md` (soft
+  limit warns, hard limit errors) and the room main-file rule from
+  `spec/room-conventions.md`.
+- `--check` exits non-zero on errors, `--strict` on warnings too. A palace
+  carries no frontmatter by design, so its missing-type rules are warnings
+  rather than a CI failure on the layout `spec/recall.md` describes.
+- `--fix` adds `type` (from `--type-map DIR=TYPE` or `[lint.types]`),
+  `generated.at` (from the file's first git commit), and `status: deprecated`
+  (for `--archive-glob` paths). It never rewrites or deletes an existing key,
+  never invents a `generated` block, and is idempotent: edits are textual
+  insertions, not a YAML round trip, so a second run produces identical bytes.
+
+**`locus index`** generates the three index shapes the conventions define:
+an OKF `index.md` per directory in section 8 form, the 50-line palace
+`INDEX.md` routing table, and a Claude Code `MEMORY.md` of one
+`- [Title](file.md) - description` line per topic file. Output is
+deterministic, so `--check` is a byte comparison; entries are sorted, the
+palace consolidation date and author prose are preserved rather than
+regenerated, and only index files are ever written. A palace over the 50-line
+budget is an error pointing at sub-indices, not a truncated file.
+
+Both are dispatched from `locus.cli` before the Agent SDK is imported, so a CI
+job that only checks conformance never installs it. `.locus.toml` gains a
+`[lint]` table (`roots`, `archive_globs`, `[lint.types]`) and falls back to
+`[recall] roots`, so a project configured once for recall needs no second
+configuration.
+
+**Fixes found while building this:**
+
+- Root classification is case-sensitive. macOS and Windows filesystems are not,
+  so `Path("bundle/INDEX.md").is_file()` answered `True` for an OKF `index.md`
+  and every bundle classified as a palace on a Mac, which would have replaced
+  its `index.md` files with an `INDEX.md`.
+- A palace with no rooms and a memory directory with no topic files generate
+  nothing, rather than replacing a hand-written or bootstrapped index with an
+  empty placeholder.
+
+Docs: new `spec/lint-and-index.md`, README "Lint and index" section, 60 unit
+tests in `tests/unit/test_conform.py` over new fixtures in
+`tests/fixtures/conform/`.
+
 ### Palace bootstrap for explicit roots, and the missing `locus-security` CLI
 
 Two bugs found while wiring Locus into a container deployment.

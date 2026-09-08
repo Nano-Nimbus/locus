@@ -52,6 +52,18 @@ file exercises one recall rule:
 | `journal/2026-05-03.md` | `type: Journal`, excluded unless `--include journal` |
 | `index.md` | OKF directory index (no frontmatter) |
 
+## conform
+
+`conform/` holds the fixtures for `tests/unit/test_conform.py`, the `locus lint`
+and `locus index` suite. Anything that mutates a tree copies it into `tmp_path`
+first, so these stay the reference for the non-mutating tests.
+
+| Directory | Role |
+|---|---|
+| `clean-bundle/` | An OKF bundle that lints clean and whose `index.md` files never drift. The index files are the generator's own output, so a drift test that fails means the generator changed. |
+| `broken-bundle/` | One instance of every rule: missing, unterminated, and type-less frontmatter; a `generated` with no `by` and a bad `at`; a `verified` with no `by`; a `sources` with no `resource`; an `index.md` carrying frontmatter and a malformed entry; a `log.md` with frontmatter, a non-ISO heading, and oldest-first order; and an `archive/` file with no `status`. |
+| `memory-root/` | A Claude Code auto-memory directory: three topic files with `name`, `description`, and a category, used for the `MEMORY.md` format and grouping tests. |
+
 ## flat-palace
 
 `flat-palace/` is used by `scripts/bench-compare.py` as the comparison target.
