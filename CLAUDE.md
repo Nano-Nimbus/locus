@@ -6,9 +6,10 @@ Guidance for Claude Code (claude.ai/code) working in this repository.
 
 Locus is a hierarchical markdown memory system for autonomous AI agents (a "palace":
 directory = room, file = knowledge, navigated on demand instead of loaded all at once).
-It ships as four things: SKILL.md files for Claude/Codex/Gemini, an MCP server
-(`locus-mcp`), a Python Agent SDK entrypoint (`locus`), and standalone CLI tools for
-retrieval, conformance, and security. Current package version: 0.10.0.
+It ships as four things: SKILL.md files for Claude Code (`skills/claude/`, the only
+maintained set; other runtimes adapt these files rather than getting a vendored copy),
+an MCP server (`locus-mcp`), a Python Agent SDK entrypoint (`locus`), and standalone
+CLI tools for retrieval, conformance, and security. Current package version: 0.10.0.
 
 For the full pitch, structure diagram, and contributor workflow see
 [`README.md`](README.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md). This file only

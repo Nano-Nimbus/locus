@@ -109,7 +109,8 @@ locus/
     __init__.py     Public API: build_security_context()
   utils.py        Shared utilities — slug_from_path()
 spec/             Palace convention definitions (the shared contract between agents)
-templates/        Copy-paste starting points for palace files and locus-security.yaml
+templates/        Palace and config templates, read by `locus init --show` and
+                  `locus-security init-config` (both trees ship inside the wheel)
 skills/
   claude/         SKILL.md files for Claude Code + Agent SDK (the only maintained set)
 docs/             Reference documentation (architecture, security, benchmarks, onboarding)
@@ -119,7 +120,7 @@ scripts/          Developer tools (benchmarks, chart generation)
 tests/
   unit/           256 unit tests covering all layers
   fixtures/       palace/ and flat-palace/ for benchmark comparison
-example-palace/   Copy-paste template to create a new palace
+example-palace/   Palace template; `locus init` writes it into a new palace
 ```
 
 ---

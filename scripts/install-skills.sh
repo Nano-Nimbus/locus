@@ -35,8 +35,13 @@ fi
 # that resolves inside SKILLS_SRC, so canonicalize both sides first: mkdir
 # it (a no-op if it already exists, and --dry-run never reaches here since
 # it writes nothing) and resolve the physical path with cd + pwd -P.
-if [[ -z "$SKILLS_DST" ]]; then
-  echo "ERROR: refusing to install to '$SKILLS_DST'" >&2
+# A blank, whitespace-only, or relative destination is never what's intended
+# here (this syncs a global skills directory, not something scoped to
+# wherever the script happened to be invoked from), and a relative path
+# would otherwise create stray content under the current working directory
+# instead of failing.
+if [[ -z "$SKILLS_DST" || "$SKILLS_DST" != /* ]]; then
+  echo "ERROR: refusing to install to '$SKILLS_DST' (must be an absolute path)" >&2
   exit 1
 fi
 if ! $DRY_RUN; then
