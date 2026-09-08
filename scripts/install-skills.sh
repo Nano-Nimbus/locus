@@ -51,21 +51,41 @@ if [[ -z "$SKILLS_DST" || "$SKILLS_DST" != /* ]]; then
   exit 1
 fi
 if ! $DRY_RUN; then
-  # Canonicalizing needs the directory to exist, so note whether we are the
-  # ones creating it: a refusal below should leave the filesystem as it
-  # found it rather than leaving a stray empty directory behind. The cleanup
-  # uses `rmdir -p` because the `mkdir -p` here may have created several
-  # levels; `rmdir` refuses a non-empty directory, so it walks up only
-  # through the ones this run created and stops at the first real one.
-  dst_preexisted=yes
-  [[ -d "$SKILLS_DST" ]] || dst_preexisted=no
+  # Canonicalizing needs the directory to exist, so record the topmost
+  # component this run will have to create: a refusal below should leave the
+  # filesystem exactly as it found it. `rmdir -p` is not usable here, because
+  # it would keep walking past that point and remove pre-existing empty
+  # parents too, deleting directories this run never created.
+  dst_created_root=""
+  if [[ ! -d "$SKILLS_DST" ]]; then
+    probe="$SKILLS_DST"
+    while [[ ! -d "$probe" ]]; do
+      dst_created_root="$probe"
+      parent="$(dirname "$probe")"
+      [[ "$parent" == "$probe" ]] && break
+      probe="$parent"
+    done
+  fi
   mkdir -p "$SKILLS_DST"
   SKILLS_DST_REAL="$(cd "$SKILLS_DST" && pwd -P)"
   SKILLS_SRC_REAL="$(cd "$SKILLS_SRC" && pwd -P)"
 
+  # Remove only the directories this run created, deepest first. `rmdir`
+  # refuses a non-empty directory, so anything that gained content is left
+  # alone, and the walk stops at the topmost component we made.
+  remove_created_dirs() {
+    local path="$SKILLS_DST"
+    [[ -n "$dst_created_root" ]] || return 0
+    while :; do
+      rmdir "$path" 2>/dev/null || return 0
+      [[ "$path" == "$dst_created_root" ]] && return 0
+      path="$(dirname "$path")"
+    done
+  }
+
   refuse_destination() {
     echo "ERROR: refusing to install to '$SKILLS_DST' ($1)" >&2
-    [[ "$dst_preexisted" == yes ]] || rmdir -p "$SKILLS_DST" 2>/dev/null || true
+    remove_created_dirs
     exit 1
   }
 

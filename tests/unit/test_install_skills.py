@@ -240,6 +240,25 @@ class TestDestinationGuard:
         assert result.returncode == 1
         assert not (fake_repo / "skills" / "claude" / "stray").exists()
 
+    def test_a_refusal_keeps_directories_it_did_not_create(
+        self, fake_repo: Path, home: Path, cwd: Path
+    ) -> None:
+        """Cleanup removes only what this run made.
+
+        The obvious implementation, ``rmdir -p``, walks past the components
+        this run created and takes pre-existing empty parents with it, so a
+        refused destination under an existing empty directory would delete
+        that directory too.
+        """
+        parent = fake_repo / "skills" / "claude" / "preexisting-empty"
+        parent.mkdir()
+        result = _run_guard(
+            fake_repo / "scripts" / SCRIPT.name, str(parent / "new"), home, cwd
+        )
+        assert result.returncode == 1
+        assert parent.is_dir(), "cleanup removed a directory it did not create"
+        assert not (parent / "new").exists()
+
     def test_a_dry_run_never_reaches_the_filesystem(
         self, fake_repo: Path, home: Path, cwd: Path
     ) -> None:
