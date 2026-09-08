@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import logging
 import tempfile
@@ -145,8 +146,15 @@ def verify_file(path: Path, palace_root: Path, keystore: KeyStore) -> Verificati
 
     try:
         raw = yaml.safe_load(sidecar.read_text(encoding="utf-8")) or {}
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         return VerificationResult(trusted=False, reason=f"sidecar parse error: {exc}")
+    if not isinstance(raw, dict):
+        # A sidecar that parses to a scalar or a list used to raise
+        # AttributeError on the next line, killing the whole verify run and
+        # leaving every later file unchecked.
+        return VerificationResult(
+            trusted=False, reason=f"sidecar is not a mapping: {type(raw).__name__}"
+        )
 
     key_id = raw.get("key_id")
     keypair = keystore.find_by_id(key_id) if key_id else None
@@ -158,6 +166,11 @@ def verify_file(path: Path, palace_root: Path, keystore: KeyStore) -> Verificati
     # Verify content hash matches
     try:
         current_content = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # UnicodeDecodeError is a ValueError, not an OSError, so it used to
+        # escape this guard and abort verify-all on the first binary file,
+        # without naming it.
+        return VerificationResult(trusted=False, reason="file is not valid UTF-8")
     except OSError as exc:
         return VerificationResult(trusted=False, reason=f"file unreadable: {exc}")
 
@@ -171,9 +184,28 @@ def verify_file(path: Path, palace_root: Path, keystore: KeyStore) -> Verificati
             signed_at=raw.get("signed_at"),
         )
 
-    # Reconstruct canonical payload and verify signature
+    # The signature binds the file's path, so the payload has to be rebuilt
+    # from where the file actually is.  Taking rel_path straight from the
+    # sidecar meant the signature only attested "some file had this hash":
+    # copying a signed low-value note plus its sidecar over INDEX.md verified
+    # clean, which promotes attacker-chosen content into the trusted tier that
+    # memory_read serves first.
+    actual_rel_path = str(path.relative_to(palace_root))
+    stored_rel_path = raw.get("rel_path")
+    if stored_rel_path != actual_rel_path:
+        return VerificationResult(
+            trusted=False,
+            reason=f"path mismatch: signed as {stored_rel_path!r}, found at {actual_rel_path!r}",
+            key_id=key_id,
+            signed_at=raw.get("signed_at"),
+        )
+
+    # palace_slug stays as recorded rather than recomputed: it is the absolute
+    # host path of the palace, so comparing it would invalidate every
+    # signature the moment a palace is moved or mounted at another prefix.
+    # The path binding above is what stops relocation inside a palace.
     palace_slug = raw.get("palace_slug", _slug_from_path(palace_root))
-    rel_path = raw.get("rel_path", str(path.relative_to(palace_root)))
+    rel_path = actual_rel_path
     signed_at = raw.get("signed_at", "")
     sig_b64 = raw.get("signature_b64", "")
 
@@ -187,12 +219,32 @@ def verify_file(path: Path, palace_root: Path, keystore: KeyStore) -> Verificati
 
     try:
         raw_sig = base64.urlsafe_b64decode(sig_b64 + "==")
-        pub_key: Ed25519PublicKey = load_der_public_key(keypair.public_key_bytes)
-        pub_key.verify(raw_sig, payload)
-    except (InvalidSignature, Exception) as exc:
+    except (binascii.Error, TypeError, ValueError) as exc:
         return VerificationResult(
             trusted=False,
-            reason=f"signature invalid: {exc}",
+            reason=f"malformed signature encoding: {exc}",
+            key_id=key_id,
+            signed_at=signed_at,
+        )
+    try:
+        pub_key: Ed25519PublicKey = load_der_public_key(keypair.public_key_bytes)
+    except (TypeError, ValueError) as exc:
+        return VerificationResult(
+            trusted=False,
+            reason=f"unusable public key for {key_id!r}: {exc}",
+            key_id=key_id,
+            signed_at=signed_at,
+        )
+    try:
+        pub_key.verify(raw_sig, payload)
+    except InvalidSignature:
+        # InvalidSignature stringifies to nothing, so the old
+        # f"signature invalid: {exc}" produced a message ending in a bare
+        # colon.  It also used to swallow every other error under the same
+        # wording, so a corrupt public key was indistinguishable from a forgery.
+        return VerificationResult(
+            trusted=False,
+            reason="signature does not match this key and content",
             key_id=key_id,
             signed_at=signed_at,
         )

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 
 import pytest
 
-from locus.security.keys import load_keystore, unique_key_id
+from locus.security.keys import load_keystore, unique_key_id, validate_key_id
 from locus.security.main import iter_signable_files, main
 from locus.security.signing import verify_file
 
@@ -304,3 +305,158 @@ class TestKeyPermissions:
         main(["rotate-keys", "--palace", str(palace)])
         retired = palace / ".security" / "keys" / "retired"
         assert stat.S_IMODE(retired.stat().st_mode) == 0o700
+
+
+class TestSignatureBindsToPath:
+    def test_relocating_a_signed_file_with_its_sidecar_is_untrusted(self, palace: Path) -> None:
+        """A signed file plus its sidecar must not verify at a different path.
+
+        The signature only ever attested "some file had this hash", because
+        verify_file rebuilt the payload from the sidecar's own rel_path. So
+        copying a signed low-value note over INDEX.md, sidecar and all,
+        verified clean and promoted attacker-chosen content into the tier
+        memory_read serves first.
+        """
+        main(["init-keys", "--palace", str(palace)])
+        main(["sign-all", "--palace", str(palace)])
+        keystore = _keystore(palace)
+
+        source = palace / "global" / "toolchain" / "toolchain.md"
+        assert verify_file(source, palace, keystore).trusted
+
+        (palace / "INDEX.md").write_bytes(source.read_bytes())
+        (palace / ".sig").mkdir(exist_ok=True)
+        (palace / ".sig" / "INDEX.md.sig").write_bytes(
+            (source.parent / ".sig" / "toolchain.md.sig").read_bytes()
+        )
+
+        result = verify_file(palace / "INDEX.md", palace, keystore)
+        assert not result.trusted
+        assert "path mismatch" in result.reason
+        assert main(["verify-all", "--palace", str(palace)]) == 1
+
+    def test_a_file_still_verifies_where_it_was_signed(self, palace: Path) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        assert main(["sign-all", "--palace", str(palace)]) == 0
+        assert main(["verify-all", "--palace", str(palace)]) == 0
+
+
+class TestMalformedSidecar:
+    def test_scalar_sidecar_fails_one_file_not_the_run(
+        self, palace: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A sidecar that parses to a scalar used to raise AttributeError.
+
+        That killed verify-all outright, so every file after it in sort order
+        went unchecked while the command still looked like a normal failure.
+        """
+        main(["init-keys", "--palace", str(palace)])
+        main(["sign-all", "--palace", str(palace)])
+        (palace / ".sig" / "INDEX.md.sig").write_text("just a bare string\n")
+        assert main(["verify-all", "--palace", str(palace)]) == 1
+        out = capsys.readouterr().out
+        assert "not a mapping" in out
+        # The other two files were still verified.
+        assert "2/3 files verified" in out
+
+    def test_unparseable_yaml_fails_one_file(self, palace: Path, capsys: pytest.CaptureFixture) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        main(["sign-all", "--palace", str(palace)])
+        (palace / ".sig" / "INDEX.md.sig").write_text("key: [unclosed\n")
+        assert main(["verify-all", "--palace", str(palace)]) == 1
+        assert "2/3 files verified" in capsys.readouterr().out
+
+    def test_non_utf8_body_fails_one_file(self, palace: Path, capsys: pytest.CaptureFixture) -> None:
+        main(["init-keys", "--palace", str(palace)])
+        main(["sign-all", "--palace", str(palace)])
+        (palace / "INDEX.md").write_bytes(b"\xff\xfe binary\n")
+        assert main(["verify-all", "--palace", str(palace)]) == 1
+        out = capsys.readouterr().out
+        assert "not valid UTF-8" in out
+        assert "2/3 files verified" in out
+
+
+class TestForceArchivesTheOldKey:
+    def test_force_keeps_old_signatures_verifiable(self, palace: Path) -> None:
+        """--force replaced the active key without archiving its public half.
+
+        Every signature made with the old key then failed with "key not
+        found", and the key needed to check them was gone from disk, so the
+        state was unrecoverable.
+        """
+        main(["init-keys", "--palace", str(palace), "--key-id", "k1"])
+        main(["sign-all", "--palace", str(palace)])
+        assert main(["init-keys", "--palace", str(palace), "--key-id", "k2", "--force"]) == 0
+        store = palace / ".security" / "keys"
+        assert (store / "retired" / "k1.pub").exists()
+        assert _keystore(palace).active.key_id == "k2"
+        assert main(["verify-all", "--palace", str(palace)]) == 0
+
+    def test_half_written_store_is_not_treated_as_empty(
+        self, palace: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        main(["init-keys", "--palace", str(palace), "--key-id", "k1"])
+        (palace / ".security" / "keys" / "active.pem").unlink()
+        assert main(["init-keys", "--palace", str(palace), "--key-id", "k2"]) == 1
+        assert "already exists" in capsys.readouterr().err
+
+
+class TestTornKeystore:
+    def test_mismatched_public_key_is_rejected(self, palace: Path, capsys: pytest.CaptureFixture) -> None:
+        """active.pub and active.pem are separate renames, so they can diverge.
+
+        Signing with a mismatched pair succeeded and produced signatures that
+        nothing could ever verify.
+        """
+        store = palace / ".security" / "keys"
+        main(["init-keys", "--palace", str(palace), "--key-id", "k1"])
+        stale_pub = (store / "active.pub").read_bytes()
+        main(["init-keys", "--palace", str(palace), "--key-id", "k2", "--force"])
+        (store / "active.pub").write_bytes(stale_pub)
+
+        assert main(["sign-all", "--palace", str(palace)]) == 1
+        assert "is not the public key for" in capsys.readouterr().err
+
+
+class TestKeyIdValidation:
+    @pytest.mark.parametrize("bad", ["../../../escaped", "with/slash", "", "-leading", "a" * 65])
+    def test_unsafe_ids_are_rejected(self, bad: str) -> None:
+        with pytest.raises(ValueError):
+            validate_key_id(bad)
+
+    def test_traversing_key_id_is_a_usage_error(self, palace: Path, capsys: pytest.CaptureFixture) -> None:
+        """--key-id ../../escaped used to write retired/*.pub outside the store."""
+        with pytest.raises(SystemExit) as exc:
+            main(["init-keys", "--palace", str(palace), "--key-id", "../../../escaped"])
+        assert exc.value.code == 2
+        assert "Invalid key id" in capsys.readouterr().err
+        assert not (palace.parent / "escaped.pub").exists()
+
+    def test_ordinary_ids_are_accepted(self) -> None:
+        for good in ("k1", "locus-2026-03-01", "locus-2026-03-01-2", "team.signing_key"):
+            assert validate_key_id(good) == good
+
+
+class TestExpiryIsEnforced:
+    def test_signing_with_an_expired_key_is_refused(
+        self, palace: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """--expires-days was decorative: nothing ever read KeyPair.is_expired."""
+        main(["init-keys", "--palace", str(palace), "--key-id", "k1"])
+        meta = palace / ".security" / "keys" / "active.json"
+        meta.write_text(
+            json.dumps({"key_id": "k1", "created_at": "2000-01-01T00:00:00+00:00",
+                        "expires_at": "2000-01-02T00:00:00+00:00"})
+        )
+        assert main(["sign-all", "--palace", str(palace)]) == 1
+        err = capsys.readouterr().err
+        assert "expired on 2000-01-02" in err
+        assert not (palace / ".sig").exists()
+
+    def test_huge_expiry_is_a_usage_error_not_an_overflow(
+        self, palace: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        with pytest.raises(SystemExit) as exc:
+            main(["init-keys", "--palace", str(palace), "--expires-days", "100000000"])
+        assert exc.value.code == 2
+        assert "at most" in capsys.readouterr().err

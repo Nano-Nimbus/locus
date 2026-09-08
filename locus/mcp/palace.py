@@ -138,6 +138,14 @@ def _ensure_index(palace: Path) -> None:
         log.info("created %s", index)
 
 
+def _is_signed(palace: Path) -> bool:
+    """True if the palace holds any Locus signature sidecar."""
+    try:
+        return any(palace.glob("**/.sig/*.sig"))
+    except OSError:
+        return False
+
+
 def _bootstrap_if_needed(palace: Path) -> None:
     """Give an existing but index-less palace directory a skeleton.
 
@@ -155,8 +163,21 @@ def _bootstrap_if_needed(palace: Path) -> None:
     A read-only root (for example a mounted checkout) is logged and skipped
     rather than failing startup; ``memory_list`` then reports the missing
     index as before.
+
+    A signed palace is also left alone.  An unsigned ``INDEX.md`` dropped into
+    one turns a clean ``locus-security verify-all`` into a failure, and with
+    ``verify_on_read`` enabled the server would refuse to serve the very file
+    it just wrote.  A palace that keeps signatures has a deliberate layout, so
+    resolving it must not change it.
     """
     if (palace / "INDEX.md").is_file():
+        return
+    if _is_signed(palace):
+        log.info(
+            "palace at %s carries signatures; not creating INDEX.md "
+            "(an unsigned index would fail verify-all)",
+            palace,
+        )
         return
     try:
         if not any(palace.iterdir()):

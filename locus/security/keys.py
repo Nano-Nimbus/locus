@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,10 @@ log = logging.getLogger("locus.security.keys")
 # stray umask cannot leave a private key group- or world-readable.
 _KEY_FILE_MODE = 0o600
 _KEY_DIR_MODE = 0o700
+
+# A key id is used verbatim as the retired archive filename, so anything
+# outside this set (a "/" or a "..") writes outside the key store.
+_KEY_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 
 class KeyLoadError(ValueError):
@@ -75,6 +80,23 @@ def _passphrase() -> bytes | None:
     return val.encode() if val else None
 
 
+def validate_key_id(key_id: str) -> str:
+    """Return ``key_id`` if it is safe to use as a filename, else raise.
+
+    ``rotate_keypair`` writes ``retired/<key_id>.pub``.  Without this check
+    ``--key-id ../../../escaped`` silently archives outside the key store,
+    and ``existing_key_ids`` cannot see the traversed name as taken because it
+    reads ids back from the filenames it can glob.
+    """
+    if not _KEY_ID_RE.match(key_id):
+        raise KeyLoadError(
+            f"Invalid key id {key_id!r}. Key ids are used as filenames: use 1 to 64 "
+            "characters from A-Z, a-z, 0-9, dot, underscore, or hyphen, starting "
+            "with a letter or digit."
+        )
+    return key_id
+
+
 def default_key_id(now: datetime | None = None) -> str:
     """The date-stamped base id used when no ``--key-id`` is given."""
     return f"locus-{(now or datetime.now(timezone.utc)).strftime('%Y-%m-%d')}"
@@ -127,6 +149,7 @@ def generate_keypair(
     """Generate a new Ed25519 keypair."""
     if key_id is None:
         key_id = default_key_id()
+    validate_key_id(key_id)
 
     private_key = Ed25519PrivateKey.generate()
     public_key = private_key.public_key()
@@ -276,6 +299,22 @@ def load_keystore(store_path: Path) -> KeyStore:
     if active_meta.exists():
         meta = json.loads(active_meta.read_text())
 
+    # save_keypair writes active.pem, active.pub and active.json as three
+    # separate renames, so a crash (or a hand-edited store) can leave a public
+    # key that does not belong to the private key beside it.  Signing would
+    # then succeed and produce signatures that nothing can ever verify, which
+    # only shows up much later as a palace-wide verify-all failure.
+    derived_public = private_key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    if derived_public != public_bytes:
+        raise KeyLoadError(
+            f"The keypair in {store_path} is inconsistent: {active_pub.name} is not "
+            f"the public key for {active_pem.name}. The store is probably half-written; "
+            "re-run init-keys --force, or restore both files from a backup."
+        )
+
     active = KeyPair(
         key_id=meta.get("key_id", "unknown"),
         private_key_bytes=private_bytes,
@@ -306,6 +345,32 @@ def load_keystore(store_path: Path) -> KeyStore:
     return KeyStore(active=active, retired=retired, store_path=store_path)
 
 
+def retire_active(active: KeyPair, store_path: Path) -> Path:
+    """Archive ``active``'s public key and metadata under ``retired/``.
+
+    Only the public half is kept: it is all verification needs, and retaining
+    the private key after retirement defeats the point of rotating.  Callers
+    must do this *before* overwriting ``active.pem``, or signatures made with
+    the outgoing key become permanently unverifiable.
+    """
+    validate_key_id(active.key_id)
+    retired_dir = store_path / "retired"
+    _secure_dir(retired_dir)
+    _atomic_write(retired_dir / f"{active.key_id}.pub", active.public_key_bytes)
+    _atomic_write(
+        retired_dir / f"{active.key_id}.json",
+        json.dumps(
+            {
+                "key_id": active.key_id,
+                "created_at": active.created_at,
+                "expires_at": active.expires_at,
+            },
+            indent=2,
+        ).encode(),
+    )
+    return retired_dir
+
+
 def rotate_keypair(
     store: KeyStore,
     store_path: Path,
@@ -323,23 +388,7 @@ def rotate_keypair(
     resolves the shared id to the *active* key, so every signature made with
     the retired key fails verification.
     """
-    retired_dir = store_path / "retired"
-    _secure_dir(retired_dir)
-
-    # Archive current public key and metadata only (never retain private key after rotation)
-    _atomic_write(
-        retired_dir / f"{store.active.key_id}.pub",
-        store.active.public_key_bytes,
-    )
-    meta = {
-        "key_id": store.active.key_id,
-        "created_at": store.active.created_at,
-        "expires_at": store.active.expires_at,
-    }
-    _atomic_write(
-        retired_dir / f"{store.active.key_id}.json",
-        json.dumps(meta, indent=2).encode(),
-    )
+    retired_dir = retire_active(store.active, store_path)
 
     taken = existing_key_ids(store_path)
     taken.add(store.active.key_id)

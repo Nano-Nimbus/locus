@@ -141,6 +141,36 @@ class TestFindPalace:
         finally:
             root.chmod(0o700)
 
+    @pytest.mark.skipif(
+        not hasattr(os, "geteuid") or os.geteuid() == 0,
+        reason="root ignores directory permissions",
+    )
+    def test_readonly_non_empty_dir_does_not_fail_startup(self, tmp_path: Path) -> None:
+        # The empty-directory case fails at the first mkdir inside
+        # _bootstrap_palace. A non-empty read-only root (a mounted checkout,
+        # the case the docstring describes) gets all the way to the
+        # _ensure_index write, which is the guard that actually matters.
+        root = tmp_path / "palace"
+        root.mkdir()
+        (root / "notes.md").write_text("# Notes\n")
+        root.chmod(0o500)
+        try:
+            assert find_palace(str(root)) == root.resolve()
+            assert not (root / "INDEX.md").exists()
+        finally:
+            root.chmod(0o700)
+
+    def test_signed_palace_is_not_given_an_index(self, tmp_path: Path) -> None:
+        # An unsigned INDEX.md dropped into a signed palace turns a clean
+        # locus-security verify-all into a failure, and with verify_on_read on
+        # the server would refuse to serve the file it just wrote.
+        root = tmp_path / "palace"
+        (root / "global" / ".sig").mkdir(parents=True)
+        (root / "global" / "notes.md").write_text("# Notes\n")
+        (root / "global" / ".sig" / "notes.md.sig").write_text("protocol: locus-sig-v1\n")
+        assert find_palace(str(root)) == root.resolve()
+        assert not (root / "INDEX.md").exists()
+
     def test_auto_memory_dir_is_not_bootstrapped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # The bridge directory belongs to Claude Code and already has MEMORY.md
         # as its entry point; Locus must not write an INDEX.md into it.

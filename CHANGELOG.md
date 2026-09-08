@@ -53,13 +53,62 @@ Two bugs found while wiring Locus into a container deployment.
 - `fix(security)`: `verify-all` exited 0 on a palace with no signable files, so a gate
   pointed at the wrong root passed vacuously. It now reports that and exits 1.
 - `feat(security)`: `rotate-keys` accepts `--expires-days`, matching `init-keys`.
+- `fix(security)`: **the signature did not bind a file to its path.** `verify_file()`
+  rebuilt the signed payload from the sidecar's own `rel_path`, so the signature only
+  attested "some file had this hash". Copying a signed low-value note plus its sidecar
+  over `INDEX.md` verified clean and exited 0, with no key material needed. Because
+  `memory_read` uses the same call to decide `[TRUSTED]`, that promoted attacker-chosen
+  content into the tier the agent reads first. The payload is now rebuilt from where the
+  file actually is and a path mismatch fails verification. `palace_slug` is still taken
+  from the sidecar so moving or remounting a palace does not invalidate every signature.
+- `fix(security)`: `init-keys --force` overwrote the active key without archiving its
+  public half, so every signature made with it failed with "key not found" and the key
+  needed to check them was gone from disk. `--force` now retires the outgoing key exactly
+  as `rotate-keys` does.
+- `fix(security)`: `--key-id` was used verbatim as the retired archive filename, so
+  `--key-id ../../../escaped` wrote key files outside the store and hid the id from the
+  uniqueness check. Key ids are now validated against `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
+- `fix(security)`: `load_keystore()` never checked that `active.pub` belongs to
+  `active.pem`. The two are separate renames, so a crash mid-save left a store that signed
+  happily and produced signatures nothing could verify. The public key is now derived from
+  the loaded private key and compared.
+- `fix(security)`: key expiry was never enforced anywhere. `KeyPair.is_expired` had no
+  call sites, so an expired key kept signing and its signatures kept verifying, which is
+  worse than no expiry because the CLI help implies the flag gates something. `sign-all`
+  now refuses an expired key.
+- `fix(security)`: a sidecar that parsed to a scalar or a list raised `AttributeError` and
+  killed the whole `verify-all` run, leaving every later file unchecked. A non-UTF-8 body
+  did the same via `UnicodeDecodeError`, which is a `ValueError` and so slipped past the
+  `except OSError` meant to catch it. Both now fail one file and the run continues.
+- `fix(security)`: `except (InvalidSignature, Exception)` reported a corrupt public key, a
+  malformed base64 payload, and a genuine forgery identically, with a message that ended
+  in a bare colon because `InvalidSignature` stringifies to nothing. Each case now has its
+  own reason, and that reason is what the server shows the agent.
+- `fix(security)`: `init-keys` checked only `active.pem` for an existing store, so the
+  half-written state a crash leaves behind read as "no keys here" and was silently
+  overwritten. All three files are checked.
+- `fix(security)`: `--expires-days 100000000` overflowed `timedelta` and exited with a
+  traceback; values above 36500 are a usage error.
+- `fix(mcp)`: bootstrap no longer writes `INDEX.md` into a palace that holds signature
+  sidecars. The two features in this PR contradicted each other: an unsigned index turned
+  a clean `verify-all` into a failure, and with `verify_on_read` enabled the server would
+  refuse to serve the file it had just written.
 
-**Tests:** 7 bootstrap cases in `test_mcp.py` (empty root, env var, `./.locus`, non-empty
-root, existing index preserved, read-only root, bridge untouched); 29 CLI cases in
-`tests/unit/security/test_cli.py`, including a double rotation on one day that checks
-signatures from all three key generations still verify, the three passphrase failure
-modes, the non-UTF-8 skip, negative `--expires-days`, symlink escape on both `sign-all`
-and `verify-all`, and key store permissions; `--version` coverage for `locus-security`.
+**Tests:** 325 pass, up from 290. 9 bootstrap cases in `test_mcp.py` (empty root, env var,
+`./.locus`, non-empty root, existing index preserved, read-only empty root, read-only
+non-empty root, signed palace, bridge untouched); 46 CLI cases in
+`tests/unit/security/test_cli.py`, including the relocation attack on a signed file, a
+double rotation on one day that checks signatures from all three key generations still
+verify, `--force` keeping old signatures verifiable, a torn keystore, key id traversal,
+expiry enforcement, malformed and unparseable sidecars, the three passphrase failure
+modes, the non-UTF-8 skip on both `sign-all` and `verify-all`, negative and oversized
+`--expires-days`, symlink escape, and key store permissions; `--version` coverage for
+`locus-security`.
+
+Note that three of these are pre-existing bugs in `locus/security/signing.py` and
+`keys.py` rather than in code this PR wrote. They are fixed here because this PR is what
+first makes that path reachable from a command line, and because the path-binding one is
+also reachable through `memory_read` today.
 
 ---
 

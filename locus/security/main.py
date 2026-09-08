@@ -37,13 +37,16 @@ from pathlib import Path
 
 from .config import SecurityConfig, load_security_config
 from .keys import (
+    KeyPair,
     default_key_id,
     existing_key_ids,
     generate_keypair,
     load_keystore,
+    retire_active,
     rotate_keypair,
     save_keypair,
     unique_key_id,
+    validate_key_id,
 )
 from .signing import sign_file, verify_file
 
@@ -54,6 +57,9 @@ from .signing import sign_file, verify_file
 _SKIP_DIRS = {"_metrics"}
 
 log = logging.getLogger("locus.security.cli")
+
+# Well inside timedelta's range, and far past any sane key lifetime.
+_MAX_EXPIRES_DAYS = 36500
 
 
 class CliError(Exception):
@@ -100,6 +106,22 @@ def iter_signable_files(palace: Path, escaped: list[Path] | None = None) -> Iter
         yield path
 
 
+def _reject_expired(keypair: KeyPair) -> None:
+    """Refuse to sign with a key that is past its ``expires_at``.
+
+    Nothing consulted ``KeyPair.is_expired`` before, so ``--expires-days`` was
+    decorative metadata: an expired key kept signing and its signatures kept
+    verifying, which is worse than having no expiry at all because the CLI
+    help implies the flag gates something.
+    """
+    if keypair.is_expired:
+        raise CliError(
+            f"Key {keypair.key_id} expired on {keypair.expires_at}. "
+            "Run rotate-keys to issue a new one; signatures already made with "
+            "it keep verifying against the retired public key."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -112,11 +134,31 @@ def cmd_init_keys(
 ) -> int:
     config = _load_config(palace)
     store = config.key_store_path
-    if (store / "active.pem").exists() and not force:
+    # Check every file, not just active.pem: a store missing only the private
+    # key is exactly what a crash mid-save leaves behind, and treating that as
+    # "no keys here" silently discarded the rest of the store.
+    present = [n for n in ("active.pem", "active.pub", "active.json") if (store / n).exists()]
+    if present and not force:
         raise CliError(
-            f"An active keypair already exists in {store}. "
+            f"An active keypair already exists in {store} ({', '.join(present)}). "
             "Use rotate-keys to rotate it, or --force to overwrite it."
         )
+    if force and (store / "active.pem").exists():
+        # --force used to overwrite the active key without archiving its
+        # public half, so every signature made with it became permanently
+        # unverifiable and the key needed to check them was gone from disk.
+        try:
+            outgoing = load_keystore(store).active
+        except (OSError, ValueError) as exc:
+            print(
+                f"locus-security: cannot archive the outgoing key ({exc}); "
+                "signatures made with it will not verify",
+                file=sys.stderr,
+            )
+        else:
+            retire_active(outgoing, store)
+            print(f"Retired {outgoing.key_id} to {store / 'retired'}")
+
     taken = existing_key_ids(store)
     if key_id is None:
         # Auto-generated ids are date-stamped, so --force on the same day as an
@@ -148,6 +190,7 @@ def cmd_sign_all(palace: Path) -> int:
     """
     config = _load_config(palace)
     keystore = load_keystore(config.key_store_path)
+    _reject_expired(keystore.active)
     escaped: list[Path] = []
     count = 0
     skipped: list[str] = []
@@ -216,6 +259,14 @@ def cmd_rotate_keys(palace: Path, expires_days: int = 365) -> int:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _key_id(value: str) -> str:
+    """argparse type for ``--key-id``: rejects anything unsafe as a filename."""
+    try:
+        return validate_key_id(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def _expires_days(value: str) -> int:
     """argparse type for ``--expires-days``: a non-negative integer.
 
@@ -230,6 +281,13 @@ def _expires_days(value: str) -> int:
     if days < 0:
         raise argparse.ArgumentTypeError(
             f"must be 0 (never expires) or a positive number of days, got {days}"
+        )
+    if days > _MAX_EXPIRES_DAYS:
+        # datetime.timedelta overflows past year 9999, which used to escape
+        # main()'s handler as an OverflowError traceback.
+        raise argparse.ArgumentTypeError(
+            f"must be at most {_MAX_EXPIRES_DAYS} days (about 100 years); "
+            "use 0 for a key that never expires"
         )
     return days
 
@@ -256,7 +314,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_init = sub.add_parser("init-keys", help="Generate the active Ed25519 keypair.")
     add_palace(p_init)
-    p_init.add_argument("--key-id", default=None, help="Key identifier (default: locus-YYYY-MM-DD).")
+    p_init.add_argument(
+        "--key-id",
+        default=None,
+        type=_key_id,
+        help="Key identifier (default: locus-YYYY-MM-DD).",
+    )
     p_init.add_argument(
         "--expires-days",
         type=_expires_days,
