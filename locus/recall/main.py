@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-k", "--k", type=int, default=3, help="Number of hits (default: 3).")
     parser.add_argument(
-        "--budget", type=int, default=4096, help="Maximum text output in bytes (default: 4096)."
+        "--budget", type=int, default=4096, help="Maximum text output in bytes; ignored with --json (default: 4096)."
     )
     parser.add_argument(
         "--include",

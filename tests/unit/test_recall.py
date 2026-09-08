@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,9 +16,16 @@ import pytest
 from locus.recall import RecallError, RecallIndex, recall, resolve_roots
 from locus.recall.config import default_index_path, find_config, load_config_roots
 from locus.recall.frontmatter import parse_mapping, split_frontmatter
-from locus.recall.index import best_line, build_match, extract_document, is_stale, trust_tier
+from locus.recall.index import (
+    best_line,
+    build_match,
+    extract_document,
+    is_stale,
+    iter_markdown,
+    trust_tier,
+)
 from locus.recall.main import main
-from locus.recall.output import format_json, format_text, truncate_bytes
+from locus.recall.output import HEADER, format_json, format_text, truncate_bytes
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BUNDLE = FIXTURES / "okf-bundle"
@@ -191,10 +200,15 @@ class TestRecallBundle:
         assert top.modified == "2026-05-01T09:00:00Z"
 
     def test_journal_excluded_by_default(self) -> None:
+        # The filter is on the frontmatter `type` column, not the path, so
+        # assert on the type: a path-prefix assertion passes even if the
+        # exclusion were keyed off the directory name instead.
         hits = recall("valve chatter solenoid", roots=[BUNDLE], k=10)
+        assert all(h.type.lower() != "journal" for h in hits)
         assert all(not h.path.startswith("journal/") for h in hits)
         hits = recall("valve chatter solenoid", roots=[BUNDLE], k=10, include_journal=True)
-        assert any(h.path == "journal/2026-05-03.md" for h in hits)
+        journal = [h for h in hits if h.path == "journal/2026-05-03.md"]
+        assert journal and journal[0].type.lower() == "journal"
 
     def test_stale_after_in_the_past(self) -> None:
         hit = recall("frost seedlings fleece", roots=[BUNDLE])[0]
@@ -355,14 +369,40 @@ class TestOutput:
         assert format_text([]) == ""
 
     def test_budget_is_a_hard_cap(self) -> None:
+        """Every budget, not a sampled few, and each rendering must hold a real hit.
+
+        The old version sampled five budgets and asserted only
+        ``startswith("Recalled memory:")``, so budgets 60 and 150, which
+        rendered the bare header and no hit at all, passed. It would have
+        passed against a format_text that never emitted a hit.
+        """
         hits = recall("zone seven valve chatter solenoid", roots=[BUNDLE], k=5, include_journal=True)
         assert len(hits) >= 2
-        for budget in (60, 150, 220, 400, 4096):
+        full = format_text(hits, budget=100_000)
+        for budget in range(len(full.encode("utf-8")) + 50):
             text = format_text(hits, budget=budget)
             assert len(text.encode("utf-8")) <= budget
             if text:
                 assert text.startswith("Recalled memory:")
+                # Never a header on its own: a hook must not promise recalled
+                # memory and then show none.
+                assert text != HEADER
+                assert "\n1. " in text
         assert format_text(hits, budget=10) == ""
+
+    def test_nothing_is_emitted_below_the_first_renderable_budget(self) -> None:
+        """Output goes straight from "" to a real hit, with no header-only step.
+
+        Every budget from the header length up to the first one that can fit a
+        hit used to emit the 17-byte header alone.
+        """
+        hits = recall("zone seven valve chatter", roots=[BUNDLE], k=3)
+        rendered = [b for b in range(400) if format_text(hits, budget=b)]
+        assert rendered, "no budget under 400 renders a hit"
+        first = rendered[0]
+        assert first > len(HEADER.encode("utf-8"))
+        assert all(format_text(hits, budget=b) == "" for b in range(first))
+        assert format_text(hits, budget=first) != HEADER
 
     def test_budget_truncates_last_summary(self) -> None:
         hits = recall("zone seven valve chatter", roots=[BUNDLE], k=1)
@@ -443,9 +483,16 @@ class TestCli:
         assert len(data) <= 2
 
     def test_budget_flag(self, capsys: pytest.CaptureFixture) -> None:
-        assert main(["--root", str(BUNDLE), "--budget", "120", "-k", "3", "valve chatter zone"]) == 0
+        assert main(["--root", str(BUNDLE), "--budget", "400", "-k", "3", "valve chatter zone"]) == 0
         out = capsys.readouterr().out
-        assert 0 < len(out.encode("utf-8")) <= 120
+        assert 0 < len(out.encode("utf-8")) <= 400
+        assert "\n1. " in out
+
+    def test_budget_too_small_for_a_hit_prints_nothing(self, capsys: pytest.CaptureFixture) -> None:
+        # 120 bytes fits the header but not one hit; it used to print the
+        # header alone.
+        assert main(["--root", str(BUNDLE), "--budget", "120", "-k", "3", "valve chatter zone"]) == 0
+        assert capsys.readouterr().out == ""
 
     def test_include_journal_and_type(self, capsys: pytest.CaptureFixture) -> None:
         main(["--root", str(BUNDLE), "--json", "-k", "10", "valve chatter"])
@@ -501,3 +548,147 @@ class TestCli:
         )
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)
+
+
+class TestReviewRegressions:
+    """Regressions from the security and correctness review of this PR."""
+
+    def test_concurrent_refresh_does_not_collide(self, tmp_path: Path, cache_home: Path) -> None:
+        """Two refreshes of one index used to fail on the (root, path) unique index.
+
+        refresh() snapshotted `known` outside a transaction and only took the
+        write lock at the first INSERT, so the process that waited for the lock
+        resumed with a stale snapshot and re-inserted rows the other had
+        already written. That is the designed workload: a prompt hook and the
+        MCP server's memory_search share one cache path.
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        for i in range(60):
+            _write(root / f"doc{i}.md", f"# Doc {i}\n\nconcurrent marker text {i}\n")
+
+        index_path = cache_home / "shared.sqlite"
+        errors: list[BaseException] = []
+
+        def refresh_once() -> None:
+            try:
+                with RecallIndex([root], index_path=index_path) as index:
+                    index.refresh()
+            except BaseException as exc:  # noqa: BLE001 - recorded and re-raised below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=refresh_once) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors, f"concurrent refresh failed: {errors!r}"
+        with RecallIndex([root], index_path=index_path) as index:
+            assert len(index.search("concurrent marker", k=100)) > 0
+
+    def test_corrupt_index_is_rebuilt_not_a_permanent_crash(
+        self, tmp_path: Path, cache_home: Path
+    ) -> None:
+        """"file is not a database" is a DatabaseError, the parent of OperationalError.
+
+        It escaped the guard entirely, so every later run crashed identically
+        and --refresh could not help: the failure happens in _connect, before
+        any refresh logic, on a file named after a hash the user never sees.
+        """
+        root = tmp_path / "root"
+        _write(root / "note.md", "# Note\n\nrecoverable marker\n")
+        index_path = cache_home / "corrupt.sqlite"
+        with RecallIndex([root], index_path=index_path) as index:
+            index.refresh()
+        index_path.write_bytes(b"definitely not a sqlite database")
+
+        with RecallIndex([root], index_path=index_path) as index:
+            index.refresh()
+            assert index.in_memory is False
+            assert [h.path for h in index.search("recoverable marker", k=5)] == ["note.md"]
+
+    def test_index_may_not_live_inside_a_root(self, tmp_path: Path, cache_home: Path) -> None:
+        root = tmp_path / "root"
+        _write(root / "note.md", "# Note\n\nmarker\n")
+        with pytest.raises(RecallError, match="inside the indexed root"):
+            RecallIndex([root], index_path=root / "idx.sqlite")
+
+    def test_cache_home_inside_a_root_is_not_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        monkeypatch.setenv("XDG_CACHE_HOME", str(root))
+        assert not default_index_path([root]).is_relative_to(root)
+
+    def test_relative_cache_home_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A relative XDG_CACHE_HOME made the index path depend on the working
+        # directory, so the same roots mapped to different index files.
+        monkeypatch.setenv("XDG_CACHE_HOME", ".")
+        path = default_index_path([BUNDLE])
+        assert path.is_absolute()
+        assert path.parent == (Path.home() / ".cache" / "locus").resolve()
+
+    def test_decomposed_query_matches_composed_text(self, tmp_path: Path, cache_home: Path) -> None:
+        """NFD input split mid-word, because a combining mark is not \\w.
+
+        macOS hands out NFD filenames and some paste paths, so an accented
+        query silently matched nothing while its NFC twin matched.
+        """
+        root = tmp_path / "root"
+        _write(root / "pump.md", "# Pumpe\n\nDie p\u00f6mpe braucht Wartung.\n")
+        nfc = "p\u00f6mpe"
+        nfd = unicodedata.normalize("NFD", nfc)
+        assert nfc != nfd
+        assert build_match(nfd) == build_match(nfc)
+        assert [h.path for h in recall(nfd, roots=[root], k=5)] == ["pump.md"]
+
+    def test_nested_roots_do_not_duplicate_hits(self, tmp_path: Path, cache_home: Path) -> None:
+        outer = tmp_path / "outer"
+        inner = outer / "inner"
+        _write(inner / "note.md", "# Note\n\nduplicated marker text\n")
+        roots = resolve_roots([str(outer), str(inner)])
+        assert roots == [outer.resolve()]
+        hits = recall("duplicated marker", roots=[outer, inner], k=10)
+        assert [h.abs_path for h in hits] == [str(inner.resolve() / "note.md")]
+
+    def test_symlinked_subdirectory_is_indexed(self, tmp_path: Path, cache_home: Path) -> None:
+        root = tmp_path / "root"
+        elsewhere = tmp_path / "elsewhere"
+        _write(root / "top.md", "# Top\n\nlinked marker at the top\n")
+        _write(elsewhere / "deep.md", "# Deep\n\nlinked marker further down\n")
+        (root / "sub").symlink_to(elsewhere, target_is_directory=True)
+        found = {p.relative_to(root).as_posix() for p in iter_markdown(root)}
+        assert found == {"top.md", "sub/deep.md"}
+        assert {h.path for h in recall("linked marker", roots=[root], k=10)} == {
+            "top.md",
+            "sub/deep.md",
+        }
+
+    def test_symlink_loop_terminates(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        _write(root / "note.md", "# Note\n\nloop marker\n")
+        (root / "self").symlink_to(root, target_is_directory=True)
+        assert {p.relative_to(root).as_posix() for p in iter_markdown(root)} == {"note.md"}
+
+    def test_is_stale_ignores_status_case(self) -> None:
+        assert is_stale("Deprecated", "") is True
+        assert is_stale("DEPRECATED", "") is True
+        assert is_stale(" deprecated ", "") is True
+        assert is_stale("active", "") is False
+
+    def test_query_failure_raises_instead_of_looking_empty(
+        self, tmp_path: Path, cache_home: Path
+    ) -> None:
+        """A damaged docs_fts used to return [], indistinguishable from no hits."""
+        root = tmp_path / "root"
+        _write(root / "note.md", "# Note\n\nsearchable marker\n")
+        with RecallIndex([root], index_path=cache_home / "broken.sqlite") as index:
+            index.refresh()
+            assert index.search("searchable marker", k=5)
+            index._con.execute("DROP TABLE docs_fts")
+            with pytest.raises(RecallError, match="Index query failed"):
+                index.search("searchable marker", k=5)

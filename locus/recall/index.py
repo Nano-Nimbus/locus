@@ -27,12 +27,13 @@ import logging
 import os
 import re
 import sqlite3
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import RecallError, default_index_path
+from .config import RecallError, dedupe_roots, default_index_path
 from .frontmatter import split_frontmatter
 
 log = logging.getLogger("locus.recall.index")
@@ -277,8 +278,13 @@ class RefreshStats:
 
 
 def is_stale(status: str, stale_after: str, now: datetime | None = None) -> bool:
-    """OKF lifecycle: ``status: deprecated`` or a ``stale_after`` in the past."""
-    if status == "deprecated":
+    """OKF lifecycle: ``status: deprecated`` or a ``stale_after`` in the past.
+
+    ``status`` is compared case-insensitively. Documents reach here already
+    lower-cased by :func:`extract_document`, but this is exported and was a
+    trap for anyone calling it with raw frontmatter.
+    """
+    if status.strip().lower() == "deprecated":
         return True
     if not stale_after:
         return False
@@ -291,10 +297,22 @@ def is_stale(status: str, stale_after: str, now: datetime | None = None) -> bool
     return deadline <= (now or datetime.now(timezone.utc))
 
 
+def _normalize_query(query: str) -> str:
+    r"""Lower-case and NFC-normalize so decomposed input tokenizes like composed input.
+
+    ``_TOKEN_RE`` is ``[^\W_]+``, and a combining mark is category Mn, which
+    is not ``\w``. Decomposed text therefore split mid-word: NFD "pompe" with
+    a combining diaeresis tokenized to ``po`` + ``mpe`` and matched nothing,
+    while the identical NFC string matched. macOS hands out NFD filenames and
+    some paste paths, so this is reachable, not theoretical.
+    """
+    return unicodedata.normalize("NFC", query).lower()
+
+
 def query_terms(query: str) -> list[str]:
     """Distinct, lower-cased query tokens worth matching on (no stopwords, no 1-char tokens)."""
     terms: list[str] = []
-    for token in _TOKEN_RE.findall(query.lower()):
+    for token in _TOKEN_RE.findall(_normalize_query(query)):
         if len(token) < 2 or token in _STOPWORDS or token in terms:
             continue
         terms.append(token)
@@ -313,7 +331,7 @@ def build_match(query: str) -> str | None:
     containing the literal ``10.0.0.201`` or ``pg_basebackup`` outranks
     one that merely mentions ``192`` or ``pg`` somewhere.
     """
-    tokens = _TOKEN_RE.findall(query.lower())
+    tokens = _TOKEN_RE.findall(_normalize_query(query))
     terms = query_terms(query)
     if not terms:
         return None
@@ -333,8 +351,25 @@ class RecallIndex:
 
     def __init__(self, roots: list[Path], index_path: Path | None = None) -> None:
         require_fts5()
-        self.roots = [Path(r).resolve() for r in roots]
-        self.index_path = index_path or default_index_path(self.roots)
+        # Nested roots would index the same file under two keys and return
+        # it twice; callers that skip resolve_roots need the same guard.
+        self.roots = dedupe_roots(list(roots))
+        if index_path is None:
+            self.index_path = default_index_path(self.roots)
+        else:
+            self.index_path = Path(index_path).expanduser().resolve()
+            inside = next(
+                (r for r in self.roots if self.index_path.is_relative_to(r)), None
+            )
+            if inside is not None:
+                # The index is disposable derived data. Writing it into an
+                # indexed root drops a binary file into what is usually a
+                # git-tracked memory repo.
+                raise RecallError(
+                    f"Index path {self.index_path} is inside the indexed root {inside}. "
+                    "Choose a location outside every root, or omit --index to use the "
+                    "XDG cache."
+                )
         self.in_memory = False
         self._con = self._connect()
         self._ensure_schema()
@@ -352,16 +387,33 @@ class RecallIndex:
 
     def _connect(self) -> sqlite3.Connection:
         try:
-            self.index_path.parent.mkdir(parents=True, exist_ok=True)
-            con = sqlite3.connect(self.index_path, timeout=5.0)
-            con.execute("PRAGMA journal_mode=WAL")
-            return con
-        except (OSError, sqlite3.OperationalError) as exc:
-            # A read-only home or cache dir must not break recall; the index
-            # is derived data, so rebuilding it in memory each time is fine.
-            log.warning("cannot open %s (%s); using an in-memory index", self.index_path, exc)
-            self.in_memory = True
-            return sqlite3.connect(":memory:")
+            return self._open(self.index_path)
+        except sqlite3.DatabaseError as exc:
+            # "file is not a database" arrives as DatabaseError, the parent of
+            # OperationalError, so it used to escape entirely: every later run
+            # crashed the same way and --refresh could not help, because the
+            # failure is here, before any refresh logic. The index is derived
+            # data, so the right move is to throw the bad file away once.
+            log.warning("index at %s is unusable (%s); rebuilding it", self.index_path, exc)
+            try:
+                self.index_path.unlink(missing_ok=True)
+                return self._open(self.index_path)
+            except (OSError, sqlite3.DatabaseError) as retry_exc:
+                exc = retry_exc
+        except OSError as exc_os:
+            exc = exc_os
+        # A read-only home or cache dir must not break recall either; the
+        # index is derived data, so rebuilding it in memory each time is fine.
+        log.warning("cannot open %s (%s); using an in-memory index", self.index_path, exc)
+        self.in_memory = True
+        return sqlite3.connect(":memory:")
+
+    @staticmethod
+    def _open(path: Path) -> sqlite3.Connection:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(path, timeout=30.0)
+        con.execute("PRAGMA journal_mode=WAL")
+        return con
 
     def _ensure_schema(self) -> None:
         con = self._con
@@ -381,8 +433,28 @@ class RecallIndex:
         """Bring the index in line with the roots; ``force`` rebuilds from scratch."""
         con = self._con
         stats = RefreshStats()
+        # BEGIN IMMEDIATE before reading, not at the first write. The snapshot
+        # below and the inserts that depend on it have to be one transaction:
+        # two processes refreshing the same index (an MCP memory_search and a
+        # prompt hook, say) otherwise both snapshot an empty `known`, and the
+        # second one to get the write lock re-INSERTs rows the first already
+        # wrote, failing on the (root, path) unique index. sqlite3 only starts
+        # its implicit transaction at the first DML statement, which is too
+        # late. executescript() would COMMIT this out from under us, so the
+        # force-rebuild deletes are plain execute() calls.
+        if con.in_transaction:
+            con.commit()
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            return self._refresh_locked(con, stats, force)
+        except BaseException:
+            con.rollback()
+            raise
+
+    def _refresh_locked(self, con: sqlite3.Connection, stats: RefreshStats, force: bool) -> RefreshStats:
         if force:
-            con.executescript("DELETE FROM docs; DELETE FROM docs_fts;")
+            con.execute("DELETE FROM docs")
+            con.execute("DELETE FROM docs_fts")
         known: dict[tuple[str, str], tuple[int, int, int, str]] = {
             (root, path): (doc_id, mtime_ns, size, content_hash)
             for doc_id, root, path, mtime_ns, size, content_hash in con.execute(
@@ -522,9 +594,14 @@ class RecallIndex:
 
         try:
             rows = self._con.execute("\n".join(sql), params).fetchall()
-        except sqlite3.OperationalError as exc:
-            log.warning("FTS5 query failed for %r: %s", match, exc)
-            return []
+        except sqlite3.DatabaseError as exc:
+            # Returning [] here made a damaged docs_fts table, or a lock held
+            # past the timeout, indistinguishable from an honest zero-hit
+            # search: the hook printed nothing and exited 0. RecallError is
+            # what the CLI reports and what makes the MCP server fall back to
+            # ripgrep.
+            log.error("FTS5 query failed for %r: %s", match, exc)
+            raise RecallError(f"Index query failed: {exc}. Re-run with --refresh.") from exc
 
         moment = now or datetime.now(timezone.utc)
         terms = query_terms(query)
@@ -599,8 +676,25 @@ def best_line(body: str, terms: list[str], limit: int = _SNIPPET_CHARS) -> str:
 
 
 def iter_markdown(root: Path):
-    """Yield every ``*.md`` under ``root``, skipping dot-directories and tooling dirs."""
-    for dirpath, dirnames, filenames in os.walk(root):
+    """Yield every ``*.md`` under ``root``, skipping dot-directories and tooling dirs.
+
+    Symlinked sub-directories are followed: symlinking a memory directory into
+    a palace is a normal layout, and ``os.walk``'s default of skipping them
+    made those files silently unsearchable. ``seen`` holds the real path of
+    every directory already walked, so a symlink loop terminates instead of
+    recursing forever, and a directory reachable two ways is indexed once.
+    """
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        try:
+            real = os.path.realpath(dirpath)
+        except OSError:
+            dirnames[:] = []
+            continue
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
         dirnames[:] = sorted(
             d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIR_NAMES
         )

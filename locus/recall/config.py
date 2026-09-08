@@ -15,11 +15,14 @@ same set of roots always maps to the same derived, disposable file.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tomllib
 from pathlib import Path
 
 CONFIG_FILENAME = ".locus.toml"
+
+log = logging.getLogger("locus.recall.config")
 
 
 class RecallError(Exception):
@@ -57,7 +60,29 @@ def resolve_roots(
             raise RecallError(f"Root from {source} is not a directory: {root}")
         if root not in resolved:
             resolved.append(root)
-    return resolved
+    return dedupe_roots(resolved)
+
+
+def dedupe_roots(roots: list[Path]) -> list[Path]:
+    """Resolve, de-duplicate, and drop any root contained in another.
+
+    A nested root indexes the same physical file twice under two
+    ``(root, path)`` keys, so both copies come back as separate hits, each
+    consuming one of ``k`` and one slice of ``--budget``.
+    """
+    resolved: list[Path] = []
+    for root in roots:
+        resolved_root = Path(root).expanduser().resolve()
+        if resolved_root not in resolved:
+            resolved.append(resolved_root)
+    kept: list[Path] = []
+    for root in resolved:
+        parent = next((r for r in resolved if r != root and root.is_relative_to(r)), None)
+        if parent is not None:
+            log.warning("ignoring root %s: already covered by %s", root, parent)
+            continue
+        kept.append(root)
+    return kept
 
 
 def find_config(start: Path) -> Path | None:
@@ -87,8 +112,20 @@ def load_config_roots(config_file: Path) -> list[Path]:
 def default_index_path(roots: list[Path], env: dict[str, str] | None = None) -> Path:
     """Cache location for the index over ``roots`` (order-insensitive)."""
     environ = os.environ if env is None else env
-    cache_home = environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    default_home = Path.home() / ".cache"
+    raw = environ.get("XDG_CACHE_HOME") or ""
+    cache_home = Path(raw).expanduser() if raw else default_home
+    # The XDG spec says a relative XDG_CACHE_HOME must be ignored. Honouring
+    # one also made the index path depend on the working directory, so the
+    # same roots mapped to different index files from different shells.
+    if not cache_home.is_absolute():
+        cache_home = default_home
     digest = hashlib.sha256(
         "\n".join(sorted(str(r) for r in roots)).encode("utf-8")
     ).hexdigest()[:16]
-    return Path(cache_home) / "locus" / f"{digest}.sqlite"
+    candidate = (cache_home / "locus" / f"{digest}.sqlite").resolve()
+    # An XDG_CACHE_HOME pointing into an indexed root would drop a binary file
+    # into what is usually a git-tracked memory repo.
+    if any(candidate.is_relative_to(Path(r).resolve()) for r in roots):
+        candidate = (default_home / "locus" / f"{digest}.sqlite").resolve()
+    return candidate

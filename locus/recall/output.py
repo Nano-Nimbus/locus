@@ -25,6 +25,7 @@ def format_text(hits: list[Hit], budget: int = 4096) -> str:
         return ""
     out = HEADER
     used = len(out.encode("utf-8"))
+    rendered = 0
     for number, hit in enumerate(hits, 1):
         head = _head(number, hit)
         block = head + _indent(hit.summary)
@@ -32,12 +33,19 @@ def format_text(hits: list[Hit], budget: int = 4096) -> str:
         if used + size <= budget:
             out += block
             used += size
+            rendered += 1
             continue
         # Wrapper cost of a summary line: three-space indent plus newline.
         room = budget - used - len(head.encode("utf-8")) - len(_indent("x").encode("utf-8")) + 1
         if room >= _MIN_SUMMARY_BYTES:
             out += head + _indent(truncate_bytes(hit.summary, room))
+            rendered += 1
         break
+    if rendered == 0:
+        # A budget large enough for the header but not for a single hit used
+        # to emit the header alone, so a hook injected a promise of recalled
+        # memory followed by nothing.
+        return ""
     return out
 
 

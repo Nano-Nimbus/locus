@@ -46,8 +46,10 @@ roots = ["docs", "~/memory/shared"]
 ```
 
 Dot-directories, `node_modules`, `__pycache__`, `.venv`, and `_metrics` are
-skipped inside a root. Files over 1 MB are skipped. Roots should not nest;
-a file inside two roots is indexed twice.
+skipped inside a root. Files over 1 MB are skipped. Symlinked sub-directories
+are followed, with a cycle guard, so a directory reachable two ways is indexed
+once. A root contained in another root is dropped with a warning, because a
+file inside two roots would otherwise be indexed twice and returned twice.
 
 ---
 
@@ -55,9 +57,14 @@ a file inside two roots is indexed twice.
 
 **Location.** `${XDG_CACHE_HOME:-~/.cache}/locus/<hash-of-roots>.sqlite`, where
 the hash is over the sorted, resolved root paths. The index is never written
-inside a root: it is derived, disposable data. If the cache location cannot be
-opened (read-only home, for example) the index is built in memory for that
-call instead. `--index PATH` overrides the location.
+inside a root: it is derived, disposable data. That is enforced, not assumed.
+A relative `XDG_CACHE_HOME` is ignored per the XDG spec (honouring one made the
+index path depend on the working directory), one pointing inside a root falls
+back to `~/.cache`, and an `--index PATH` inside a root is an error. If the
+cache location cannot be opened (read-only home, for example) the index is
+built in memory for that call instead. An index file that is corrupt or not a
+database is deleted and rebuilt once, rather than failing every run forever.
+`--index PATH` overrides the location.
 
 **Refresh.** Every call walks the roots. A file whose mtime and size match the
 stored row is skipped. Otherwise it is read and hashed; if the content hash

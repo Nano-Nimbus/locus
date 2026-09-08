@@ -143,6 +143,63 @@ flag, journal exclusion, byte budget, multi-root attribution, incremental refres
 tie-breaks, phrase boost, config, CLI, console-script dispatch) and 9 in `test_mcp.py`
 (ranked order, trust tier and `STALE` in output, scope to a file, journal inclusion,
 write-then-search, FTS5 fallback); 336 total.
+**Review fixes:**
+- `fix(recall)`: **two concurrent refreshes of one index crashed** with
+  `UNIQUE constraint failed: docs.root, docs.path`. `refresh()` snapshotted the known
+  rows outside a transaction and only took the write lock at the first `INSERT`, so the
+  process that waited for the lock resumed against a database the other had already
+  populated and re-inserted rows it thought were new. That is the designed workload: a
+  per-prompt hook and the MCP server's `memory_search` share one cache path, so two
+  sessions were enough. Six concurrent runs over 1240 files: 5 of 6 failed before, 0 of 6
+  now. `refresh()` takes `BEGIN IMMEDIATE` before reading, and the lock timeout went from
+  5s to 30s.
+- `fix(recall)`: a corrupt index file was a permanent, unrecoverable crash.
+  `PRAGMA journal_mode=WAL` on a non-database raises `sqlite3.DatabaseError`, the *parent*
+  of `OperationalError`, so it escaped the guard entirely. Every later run failed the same
+  way, `--refresh` could not help (the failure is in `_connect`, before any refresh logic),
+  and the only fix was deleting a file named after a hash the user never sees. The file is
+  now discarded and rebuilt once. This also closes the matching hole in `memory_search`,
+  which raised instead of falling back to ripgrep.
+- `fix(recall)`: the index could be written inside an indexed root, contradicting the
+  module docstring and `spec/recall.md`. Three ways: `XDG_CACHE_HOME` set to a root, a
+  relative `XDG_CACHE_HOME` (which also made the index path depend on the working
+  directory, so the same roots mapped to different files from different shells), and
+  `--index <root>/x.sqlite`. All three are handled now.
+- `fix(recall)`: NFD-normalized query text matched nothing. `[^\W_]+` splits on combining
+  marks, which are category Mn and so not `\w`, while the FTS5 tokenizer folds them, so a
+  decomposed accented word tokenized to two fragments. macOS produces NFD for filenames
+  and some paste paths. Queries are NFC-normalized.
+- `fix(recall)`: nested roots indexed the same physical file twice under two
+  `(root, path)` keys and returned it twice, each copy eating one of `k` and one slice of
+  `--budget`. A root contained in another is dropped with a warning, in `resolve_roots`
+  and in `RecallIndex` for callers that bypass it.
+- `fix(recall)`: a budget large enough for the header but not for one hit emitted the bare
+  `Recalled memory:` header, so a hook injected a promise of recalled memory followed by
+  nothing. For the test bundle that was every budget from 17 to 219. It now emits nothing.
+- `fix(recall)`: `search()` turned any query-time SQL failure into `[]`, making a damaged
+  `docs_fts` table or a lock held past the timeout indistinguishable from an honest
+  zero-hit search. It raises `RecallError` now, which is what the CLI reports and what
+  makes the MCP server fall back to ripgrep.
+- `fix(recall)`: symlinked sub-directories were silently skipped (`os.walk` defaults to
+  `followlinks=False`), so symlinking a memory directory into a palace made those files
+  unsearchable. They are followed, with a realpath cycle guard.
+- `fix(recall)`: `is_stale()` compared `status` case-sensitively. Harmless through the
+  index, which lowercases at extraction, but a trap for the exported helper.
+- `docs(recall)`: `--budget` help says it is ignored with `--json`.
+**Tests:** 349 total, up from 336. 58 in `tests/unit/test_recall.py` for the feature
+(frontmatter parser, planted hit, stale flag, journal exclusion, byte budget, multi-root
+attribution, incremental refresh, tie-breaks, phrase boost, config, CLI, console-script
+dispatch), 9 in `test_mcp.py` (ranked order, trust tier and `STALE` in output, scope to a
+file, journal inclusion, write-then-search, FTS5 fallback), plus 11 review regressions
+(concurrent refresh, corrupt index, index inside a root, cache home inside a root,
+relative cache home, NFD query, nested roots, symlinked subdirectory, symlink loop,
+`is_stale` casing, query failure raising).
+Three existing tests asserted less than they claimed and were tightened:
+`test_budget_is_a_hard_cap` sampled five budgets and checked only that output started with
+the header, so the two budgets that rendered a header and no hit passed (it now sweeps
+every budget and requires a real hit); `test_index_lives_in_cache_not_root` covered only
+the happy XDG path; and `test_journal_excluded_by_default` asserted on the `journal/` path
+prefix while the code filters on the frontmatter `type` column.
 
 ---
 
