@@ -9,18 +9,15 @@ are knowledge. Agents navigate it on demand — only loading what they need.
 
 **Claude:**
 ```sh
-cp -r skills/claude/locus ~/.claude/skills/locus
-cp -r skills/claude/locus-consolidate ~/.claude/skills/locus-consolidate
+git clone https://github.com/Nano-Nimbus/locus.git
+cd locus
+make install-skills            # copies skills/claude/* to ~/.claude/skills/
 ```
 
-**Codex:**
-```sh
-cp -r skills/codex/locus ~/.codex/skills/locus
-cp -r skills/codex/locus-consolidate ~/.codex/skills/locus-consolidate
-```
-
-**Gemini:** Place `skills/gemini/locus/SKILL.md` in your project's `.gemini/`
-directory, or reference it directly in a GitHub Actions workflow.
+`skills/claude/` is the only maintained skill set. The palace convention, the
+MCP server, and the `locus recall` / `locus lint` / `locus index` CLIs are
+runtime-neutral; a Codex, Gemini, or other agent runtime is welcome to adapt
+the Claude skill files directly rather than getting a vendored copy.
 
 **Agent SDK (Python):**
 ```sh

@@ -1,3 +1,12 @@
+---
+name: locus-feedback
+description: >
+  Record quality feedback on the most recent Locus run by annotating that run's
+  _metrics/ JSON with a pass, partial, or fail verdict. Use when the user rates a
+  palace answer, or when the locus skill infers a disagreement signal from the
+  immediate follow-up message.
+---
+
 # Locus Feedback
 
 Record quality feedback on the most recent Locus run. Annotates the run's

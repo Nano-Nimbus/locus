@@ -35,7 +35,7 @@ is slow and burns tokens. Locus structures memory hierarchically so agents navig
 
 **What Locus is:**
 - A filesystem convention (directories as rooms, markdown as knowledge)
-- A set of agent skills (SKILL.md files for Claude, Codex, Gemini)
+- A set of agent skills (SKILL.md files, maintained for Claude Code)
 - An MCP server (protocol-native memory access with safety guards)
 - A Python Agent SDK entrypoint (for benchmarking and autonomous runs)
 - An optional security layer (Ed25519 signatures, taint tracking, nonce watermarking)
@@ -44,7 +44,11 @@ is slow and burns tokens. Locus structures memory hierarchically so agents navig
 - A vector database or embedding store
 - A general-purpose file sync tool
 - A replacement for project-specific documentation
-- Tied to any single agent runtime (it is agent-agnostic by design)
+- Tied to any single agent runtime: the palace convention, the MCP server, and the
+  `locus recall` / `locus lint` / `locus index` CLIs are runtime-neutral. The skill
+  files are the one exception. Only the Claude Code set in `skills/claude/` is
+  maintained, and other runtimes are expected to adapt it rather than find a
+  vendored variant here.
 
 The security system (v0.9+) extends this into runtime trust enforcement: making injected
 content cryptographically distinguishable from operator-authorized content.
@@ -107,9 +111,7 @@ locus/
 spec/             Palace convention definitions (the shared contract between agents)
 templates/        Copy-paste starting points for palace files and locus-security.yaml
 skills/
-  claude/         SKILL.md files for Claude Code + Agent SDK
-  codex/          Codex-compatible skill files
-  gemini/         Gemini CLI + GitHub Actions skill files
+  claude/         SKILL.md files for Claude Code + Agent SDK (the only maintained set)
 docs/             Reference documentation (architecture, security, benchmarks, onboarding)
   bench/          Per-version benchmark JSON — read by generate-charts.py
   img/            Generated SVG charts
@@ -512,7 +514,7 @@ this normalization without versioning the protocol (`locus-sig-v2`).
 **Good fits — open a PR:**
 - Bug fixes in `locus/mcp/`, `locus/audit/`, `locus/agent/`, `locus/security/`
 - New MCP tool behaviours (with tests)
-- Skill files for new agent runtimes (`skills/<runtime>/`)
+- Fixes to the Claude skills in `skills/claude/` when they drift from the shipped CLI
 - Benchmark improvements and new test cases
 - Documentation fixes and improvements
 - Performance improvements that don't change observable behaviour

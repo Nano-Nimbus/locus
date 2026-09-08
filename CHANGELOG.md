@@ -290,6 +290,12 @@ plus a locked-index case and one that pins the widened exception class.
 
 ---
 
+### One maintained skill set, rewritten against the shipped CLI
+
+`skills/codex/` and `skills/gemini/` are deleted and the Claude skills are rewritten around `locus recall`, `locus lint`, `locus index`, and the current palace bootstrap order, so the skill surface stops describing 0.8 (#61).
+
+---
+
 ## v0.10.0 — 2026-03-14
 
 Bumps version to include `--version` flag on all CLIs, skill sync tooling,
