@@ -203,6 +203,35 @@ prefix while the code filters on the frontmatter `type` column.
 
 ---
 
+### Recall follow-up: a busy index degrades instead of failing
+
+Three defects a second review pass confirmed after #56 merged, plus the lint it flagged.
+
+- `fix(recall)`: a concurrent writer holding the WAL lock made `recall()` raise
+  `sqlite3.OperationalError: database is locked` once the timeout expired, so a prompt hook
+  died rather than returning anything. Two processes share one index by design (a hook and
+  the MCP server's `memory_search`), so losing the race is normal, not exceptional. The
+  refresh is now skipped with a warning on stderr and the search runs against the index as
+  it stands: slightly stale hits beat a traceback and no hits. The timeout moved into
+  `LOCK_TIMEOUT_SECONDS` so it can be patched in tests instead of waiting 30 seconds.
+- `fix(recall)`: `search()` caught `sqlite3.DatabaseError`, so an `InterfaceError` from a
+  connection torn down underneath it still surfaced as a bare traceback. It catches
+  `sqlite3.Error` now, the base of every sqlite exception class.
+- `fix(recall)`: recovering from an unusable index deleted the file even when the user
+  named it with `--index`. The derived cache file is disposable and is still rebuilt in
+  place, but an explicit `--index` is the user's own file: recall degrades to an in-memory
+  index and leaves it exactly as found, saying so in the warning.
+- `style(recall)`: cleared the ruff findings on the recall module and its tests (`UP017`
+  `datetime.UTC`, `I001` import order, `PYI034` `Self` return on `__enter__`, `RUF015`,
+  `PLW1510`). `SIM905` is left alone deliberately.
+
+**Tests:** 408, up from 405. The merged corrupt-index test only covered the explicit
+`--index` path, which is exactly the path whose behaviour changed, so it is split into a
+derived-cache case (rebuilt on disk) and an explicit case (left untouched, in memory),
+plus a locked-index case and one that pins the widened exception class.
+
+---
+
 ## v0.10.0 — 2026-03-14
 
 Bumps version to include `--version` flag on all CLIs, skill sync tooling,
