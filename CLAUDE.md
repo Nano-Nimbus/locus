@@ -39,8 +39,8 @@ Plus `locus/cli.py` (console-script dispatch, see below) and `locus/utils.py`
 `locus-security`.
 
 `locus` is not one command, it is a router. `locus/cli.py` inspects `sys.argv[1]`:
-`recall`, `lint`, and `index` are dispatched straight to `locus.recall.main` and
-`locus.conform.main`, without importing the Agent SDK. Everything else falls through
+`recall`, `lint`, `index`, and `init` are dispatched straight to `locus.recall.main`,
+`locus.conform.main`, and `locus.scaffold`, without importing the Agent SDK. Everything else falls through
 to `locus.agent.main:cli` (the `--palace ... --task ...` agent run), which does
 import the SDK. This matters for anything that shells out to `locus` from a hook or
 a CI job: `locus lint --check` and `locus recall ...` stay cheap only if nothing adds

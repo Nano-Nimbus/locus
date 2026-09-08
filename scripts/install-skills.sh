@@ -15,7 +15,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILLS_SRC="$REPO_ROOT/skills/claude"
-SKILLS_DST="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+# `${VAR-default}` and not `${VAR:-default}` on purpose: an explicitly empty
+# CLAUDE_SKILLS_DIR is a caller mistake worth failing on, not a request for
+# the default. With `:-` an empty value resolved silently to the real
+# ~/.claude/skills, which is how a test run once overwrote live user config.
+SKILLS_DST="${CLAUDE_SKILLS_DIR-$HOME/.claude/skills}"
 
 DRY_RUN=false
 case "${1:-}" in
@@ -29,36 +33,62 @@ if [[ ! -d "$SKILLS_SRC" ]]; then
   exit 1
 fi
 
-# An empty, root, or source-tree destination would make the per-skill
-# `rm -rf` below dangerous. A plain string comparison against "/" does not
-# catch a root alias ("//", "/tmp/..", a symlink to "/") or a destination
-# that resolves inside SKILLS_SRC, so canonicalize both sides first: mkdir
-# it (a no-op if it already exists, and --dry-run never reaches here since
-# it writes nothing) and resolve the physical path with cd + pwd -P.
-# A blank, whitespace-only, or relative destination is never what's intended
-# here (this syncs a global skills directory, not something scoped to
-# wherever the script happened to be invoked from), and a relative path
-# would otherwise create stray content under the current working directory
-# instead of failing.
+# The per-skill `rm -rf` below makes a wrong destination destructive, so the
+# destination is validated in two stages.
+#
+# First, cheaply, on the string: a blank, whitespace-only, or relative path is
+# never what's intended (this syncs a global skills directory, not something
+# scoped to wherever the script was invoked from) and a relative one would
+# otherwise create stray content under the current working directory instead
+# of failing.
+#
+# Then, on the resolved path, because a string comparison catches none of the
+# aliases: "//", "/tmp/..", or a symlink can all name "/" or the source tree.
+# Canonicalize both sides with cd + pwd -P and compare those. --dry-run skips
+# this stage: it writes nothing, so it needs no destination to exist.
 if [[ -z "$SKILLS_DST" || "$SKILLS_DST" != /* ]]; then
-  echo "ERROR: refusing to install to '$SKILLS_DST' (must be an absolute path)" >&2
+  echo "ERROR: refusing to install to '$SKILLS_DST' (must be a non-empty absolute path)" >&2
   exit 1
 fi
 if ! $DRY_RUN; then
+  # Canonicalizing needs the directory to exist, so note whether we are the
+  # ones creating it: a refusal below should leave the filesystem as it
+  # found it rather than leaving a stray empty directory behind. The cleanup
+  # uses `rmdir -p` because the `mkdir -p` here may have created several
+  # levels; `rmdir` refuses a non-empty directory, so it walks up only
+  # through the ones this run created and stops at the first real one.
+  dst_preexisted=yes
+  [[ -d "$SKILLS_DST" ]] || dst_preexisted=no
   mkdir -p "$SKILLS_DST"
   SKILLS_DST_REAL="$(cd "$SKILLS_DST" && pwd -P)"
   SKILLS_SRC_REAL="$(cd "$SKILLS_SRC" && pwd -P)"
+
+  refuse_destination() {
+    echo "ERROR: refusing to install to '$SKILLS_DST' ($1)" >&2
+    [[ "$dst_preexisted" == yes ]] || rmdir -p "$SKILLS_DST" 2>/dev/null || true
+    exit 1
+  }
+
   # bash's `cd`/`pwd -P` leave exactly two leading slashes ("//") verbatim
   # instead of collapsing them to "/" (a POSIX-sanctioned quirk), so match
   # any all-slash path rather than comparing against the literal string "/".
   if [[ "$SKILLS_DST_REAL" =~ ^/+$ ]]; then
-    echo "ERROR: refusing to install to '$SKILLS_DST' (resolves to /)" >&2
-    exit 1
+    refuse_destination "resolves to /"
   fi
+  # Containment is checked in BOTH directions, because the per-skill `rm -rf`
+  # below is destructive either way. A destination inside the source tree
+  # deletes the skills being installed. A destination that *contains* the
+  # source tree deletes whatever sibling shares a skill's name: pointing this
+  # at the repository root removes the `locus/` Python package, because
+  # `skills/claude/locus/` makes `locus` a skill name too.
   case "$SKILLS_DST_REAL" in
     "$SKILLS_SRC_REAL" | "$SKILLS_SRC_REAL"/*)
-      echo "ERROR: refusing to install into the source tree: $SKILLS_DST_REAL" >&2
-      exit 1
+      refuse_destination "inside the source tree: $SKILLS_DST_REAL"
+      ;;
+  esac
+  case "$SKILLS_SRC_REAL" in
+    "$SKILLS_DST_REAL"/*)
+      refuse_destination "contains the source tree: $SKILLS_DST_REAL"
       ;;
   esac
 fi
