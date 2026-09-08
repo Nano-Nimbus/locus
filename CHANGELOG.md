@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `docs`: rewrote `CLAUDE.md` to match the shipped module layout and CLI commands, and archived `SPECIFICATION.md` to `docs/history/SPECIFICATION.md` as superseded by `spec/` (#60).
+
 ### `locus lint` and `locus index`: OKF conformance and generated indexes
 
 Two commands that make an OKF bundle, a palace, or a Claude Code memory
